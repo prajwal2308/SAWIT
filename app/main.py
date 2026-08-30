@@ -6,6 +6,7 @@ import html
 import secrets
 from functools import lru_cache
 from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
@@ -127,10 +128,18 @@ async def webhook_receive(
 @app.get("/api/notes", dependencies=[Depends(require_key)])
 def api_notes(
     q: str | None = None,
+    category: str | None = None,
     limit: int = 50,
     store: Store = Depends(get_store),
 ) -> list[dict[str, Any]]:
-    return store.search(q, limit) if q else store.recent(limit)
+    if q:
+        return store.search(q, limit, category=category)
+    return store.recent(limit, category=category)
+
+
+@app.get("/api/categories", dependencies=[Depends(require_key)])
+def api_categories(store: Store = Depends(get_store)) -> list[dict[str, Any]]:
+    return [{"category": name, "count": count} for name, count in store.category_counts()]
 
 
 @app.get("/api/notes/{note_id}", dependencies=[Depends(require_key)])
@@ -153,20 +162,55 @@ def thumbnail(note_id: str, store: Store = Depends(get_store)) -> Response:
 @app.get("/", response_class=HTMLResponse, dependencies=[Depends(require_key)])
 def index(
     q: str | None = None,
+    category: str | None = None,
     k: str | None = None,
     store: Store = Depends(get_store),
 ) -> HTMLResponse:
-    notes = store.search(q, 100) if q else store.recent(100)
+    if q:
+        notes = store.search(q, 100, category=category)
+    else:
+        notes = store.recent(100, category=category)
+
     key = html.escape(k or "", quote=True)
-    rows = "\n".join(_card(note, key) for note in notes) or "<p class=empty>Nothing saved yet.</p>"
+    chips = _category_chips(store.category_counts(), category, k, q)
+    if notes:
+        rows = "\n".join(_card(note, key) for note in notes)
+    elif category:
+        rows = f"<p class=empty>Nothing in {html.escape(category)} yet.</p>"
+    else:
+        rows = "<p class=empty>Nothing saved yet.</p>"
+
     return HTMLResponse(_page(
         f"""<form method=get>
               <input type=hidden name=k value="{key}">
+              <input type=hidden name=category value="{html.escape(category or '', quote=True)}">
               <input name=q value="{html.escape(q or '', quote=True)}"
                      placeholder="Search everything you saved" autocomplete=off>
             </form>
+            {chips}
             {rows}"""
     ))
+
+
+def _category_chips(
+    counts: list[tuple[str, int]], active: str | None, key: str | None, q: str | None
+) -> str:
+    """One tap to narrow to a topic, without losing the current search."""
+    if not counts:
+        return ""
+
+    def chip(label: str, value: str | None, count: int) -> str:
+        params = {p: v for p, v in (("k", key), ("q", q), ("category", value)) if v}
+        # escape() the query string too: a bare & in an href is invalid HTML.
+        href = html.escape(f"/?{urlencode(params)}", quote=True)
+        css = "chip on" if value == active else "chip"
+        return (f"<a class='{css}' href='{href}'>"
+                f"{html.escape(label)} <span>{count}</span></a>")
+
+    total = sum(count for _, count in counts)
+    chips = [chip("All", None, total)]
+    chips += [chip(name, name, count) for name, count in counts]
+    return f"<nav class=chips>{''.join(chips)}</nav>"
 
 
 @app.get("/notes/{note_id}", response_class=HTMLResponse, dependencies=[Depends(require_key)])
@@ -195,7 +239,8 @@ def note_page(
     parts = [
         f"<a href='/?k={key}'>&larr; all notes</a>",
         f"<h1>{esc(note['title'])}</h1>",
-        f"<p class=meta>{esc(note['category'])}"
+        f"<p class=meta><a href='/?k={key}&category={esc(note['category'])}'>"
+        f"{esc(note['category'])}</a>"
         + (f" &middot; {esc(note['uploader'])}" if note.get("uploader") else "")
         + "</p>",
         f"<p class=lede>{esc(note['one_liner'])}</p>",
@@ -246,5 +291,12 @@ text-decoration:none}}
 .meta{{color:var(--dim);font-size:.8rem;text-transform:uppercase;
 letter-spacing:.04em;margin:0}}
 .lede{{margin:.25rem 0;color:var(--dim)}} .empty{{color:var(--dim)}}
+.chips{{display:flex;gap:.4rem;overflow-x:auto;padding-bottom:.6rem;
+margin-bottom:.4rem;-webkit-overflow-scrolling:touch}}
+.chip{{flex:none;padding:.35rem .7rem;border:1px solid var(--line);border-radius:999px;
+font-size:.85rem;text-decoration:none;white-space:nowrap}}
+.chip span{{color:var(--dim)}}
+.chip.on{{background:var(--fg);color:var(--bg);border-color:var(--fg)}}
+.chip.on span{{color:var(--bg);opacity:.7}}
 details{{margin-top:1.5rem;color:var(--dim)}}
 </style></head><body>{body}</body></html>"""

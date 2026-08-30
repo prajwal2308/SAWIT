@@ -167,35 +167,68 @@ class Store:
             row = conn.execute("SELECT thumbnail FROM notes WHERE id=?", (note_id,)).fetchone()
         return row["thumbnail"] if row else None
 
-    def recent(self, limit: int = 50) -> list[dict[str, Any]]:
+    def recent(
+        self, limit: int = 50, category: str | None = None
+    ) -> list[dict[str, Any]]:
+        clause, params = _category_clause(category, prefix="")
         with self._conn() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT *, thumbnail IS NOT NULL AS has_thumbnail FROM notes
+                {clause}
                 ORDER BY created_at DESC, rowid DESC LIMIT ?
                 """,
-                (limit,),
+                (*params, limit),
             ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
-    def search(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
+    def search(
+        self, query: str, limit: int = 50, category: str | None = None
+    ) -> list[dict[str, Any]]:
         """Newest-first full-text search — the thing Instagram saves don't do."""
         cleaned = _fts_query(query)
         if not cleaned:
             return []
+        clause, params = _category_clause(category, prefix="n.", conjunction="AND")
         with self._conn() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT n.*, n.thumbnail IS NOT NULL AS has_thumbnail
                 FROM notes_fts f
                 JOIN notes n ON n.rowid = f.rowid
-                WHERE notes_fts MATCH ?
+                WHERE notes_fts MATCH ? {clause}
                 ORDER BY n.created_at DESC, n.rowid DESC
                 LIMIT ?
                 """,
-                (cleaned, limit),
+                (cleaned, *params, limit),
             ).fetchall()
         return [_row_to_dict(r) for r in rows]
+
+    def category_counts(self) -> list[tuple[str, int]]:
+        """Categories that actually have notes, biggest first.
+
+        Only categories in use are returned — an empty `fitness` chip is a
+        dead end, and the point of the row is to narrow, not to enumerate.
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT category, COUNT(*) AS n FROM notes
+                WHERE category IS NOT NULL
+                GROUP BY category
+                ORDER BY n DESC, category ASC
+                """
+            ).fetchall()
+        return [(r["category"], r["n"]) for r in rows]
+
+
+def _category_clause(
+    category: str | None, *, prefix: str, conjunction: str = "WHERE"
+) -> tuple[str, tuple[str, ...]]:
+    """Build the optional category filter. The value is always parameterized."""
+    if not category:
+        return "", ()
+    return f"{conjunction} {prefix}category = ?", (category,)
 
 
 def _fts_query(query: str) -> str:

@@ -168,7 +168,12 @@ takeaway lands on your lock screen.
 - `https://your-app/?k=<key>` — newest first, with search that covers titles,
   takeaways, steps, key facts and the full transcript. Bookmark it to your home
   screen. (Newest first is not a feature so much as a correction.)
-- `GET /api/notes?q=...` with the `X-API-Key` header, if you want the JSON.
+- **Category chips** narrow to one topic in a tap, so looking for a finance note
+  does not mean scrolling past travel. Only categories that actually have notes
+  are offered, and a chip keeps whatever you have already typed in the search
+  box — tapping one narrows, it never resets.
+- `GET /api/notes?q=...&category=finance` with the `X-API-Key` header, if you
+  want the JSON. `GET /api/categories` lists the categories in use with counts.
 
 ## Costs
 

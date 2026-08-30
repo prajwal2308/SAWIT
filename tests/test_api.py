@@ -169,3 +169,72 @@ def test_a_retried_webhook_is_not_processed_twice(client):
     assert first.json() == {"accepted": 1}
     assert second.json() == {"accepted": 0}
     assert len(client.started) == 1
+
+
+def stock(client) -> None:
+    for note in (
+        make_note(),
+        make_note(title="Kyoto in November", category="travel"),
+        make_note(title="Cold brew ratio", category="food"),
+    ):
+        note_id = client.store.create_pending("https://example.com/r/x")
+        client.store.save_note(note_id, note, transcript="shared transcript")
+
+
+def test_api_filters_by_category(client):
+    stock(client)
+
+    listing = client.get("/api/notes", params={"category": "travel"},
+                         headers={"X-API-Key": API_KEY}).json()
+
+    assert [n["title"] for n in listing] == ["Kyoto in November"]
+
+
+def test_api_exposes_the_categories_in_use(client):
+    stock(client)
+
+    counts = client.get("/api/categories", headers={"X-API-Key": API_KEY}).json()
+
+    assert counts == [
+        {"category": "finance", "count": 1},
+        {"category": "food", "count": 1},
+        {"category": "travel", "count": 1},
+    ]
+
+
+def test_chips_offer_only_categories_that_exist(client):
+    stock(client)
+
+    page = client.get("/", params={"k": API_KEY}).text
+
+    assert "category=travel" in page
+    assert "category=food" in page
+    # Nothing is tagged fitness, so a fitness chip would be a dead end.
+    assert "category=fitness" not in page
+
+
+def test_a_chip_narrows_the_listing(client):
+    stock(client)
+
+    page = client.get("/", params={"k": API_KEY, "category": "travel"}).text
+
+    assert "Kyoto in November" in page
+    assert "The 50/30/20 budget rule" not in page
+    assert "Cold brew ratio" not in page
+
+
+def test_a_chip_keeps_the_current_search(client):
+    stock(client)
+
+    page = client.get("/", params={"k": API_KEY, "q": "shared"}).text
+
+    # Every chip carries the query, so tapping one narrows instead of resetting.
+    assert "q=shared&amp;category=travel" in page
+
+
+def test_an_empty_category_says_so(client):
+    stock(client)
+
+    page = client.get("/", params={"k": API_KEY, "category": "fitness"}).text
+
+    assert "Nothing in fitness yet." in page

@@ -73,3 +73,61 @@ def test_recent_is_newest_first(settings):
         store.save_note(note_id, make_note(), transcript="x")
 
     assert [n["id"] for n in store.recent()] == list(reversed(ids))
+
+
+def stock_the_store(store) -> None:
+    notes = [
+        make_note(),
+        make_note(title="Index funds explained"),
+        make_note(title="Kyoto in November", category="travel", tags=["japan"]),
+        make_note(title="Cold brew ratio", category="food", tags=["coffee"]),
+    ]
+    for index, note in enumerate(notes):
+        note_id = store.create_pending(f"https://example.com/reel/{index}")
+        store.save_note(note_id, note, transcript="shared transcript text")
+
+
+def test_recent_filters_by_category(settings):
+    store = Store(settings.db_path)
+    stock_the_store(store)
+
+    assert len(store.recent()) == 4
+    assert len(store.recent(category="finance")) == 2
+    assert [n["title"] for n in store.recent(category="travel")] == ["Kyoto in November"]
+    assert store.recent(category="fitness") == []
+
+
+def test_search_and_category_narrow_together(settings):
+    store = Store(settings.db_path)
+    stock_the_store(store)
+
+    # The transcript is shared, so search alone matches everything.
+    assert len(store.search("shared")) == 4
+    assert len(store.search("shared", category="finance")) == 2
+    assert store.search("kyoto", category="finance") == []
+    assert [n["title"] for n in store.search("kyoto", category="travel")] == [
+        "Kyoto in November"
+    ]
+
+
+def test_category_counts_are_biggest_first(settings):
+    store = Store(settings.db_path)
+    stock_the_store(store)
+
+    assert store.category_counts() == [("finance", 2), ("food", 1), ("travel", 1)]
+
+
+def test_pending_notes_have_no_category_to_count(settings):
+    store = Store(settings.db_path)
+    store.create_pending("https://example.com/reel/pending")
+
+    assert store.category_counts() == []
+    # ...but they still show up in the unfiltered list, so nothing is hidden.
+    assert len(store.recent()) == 1
+
+
+def test_a_category_filter_cannot_be_injected(settings):
+    store = Store(settings.db_path)
+    stock_the_store(store)
+
+    assert store.recent(category="finance' OR '1'='1") == []
