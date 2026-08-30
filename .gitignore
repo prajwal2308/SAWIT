@@ -1,0 +1,8 @@
+*.sqlite3
+.env
+cookies.txt
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.venv/

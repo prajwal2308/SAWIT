@@ -1,0 +1,46 @@
+import pytest
+
+from app.config import Settings
+from app.schemas import KeyFact, ReelNote
+
+API_KEY = "test-key-not-a-real-secret"
+IG_APP_SECRET = "test-app-secret"
+IG_VERIFY_TOKEN = "test-verify-token"
+
+
+@pytest.fixture
+def settings(tmp_path) -> Settings:
+    return Settings(
+        api_key=API_KEY,
+        db_path=str(tmp_path / "notes.sqlite3"),
+        model="claude-opus-5",
+        asr_backend="faster-whisper",
+        whisper_model="tiny",
+        ntfy_server="https://ntfy.example",
+        ntfy_topic=None,
+        public_base_url=None,
+        cookies_file=None,
+        frame_count=2,
+        max_duration_seconds=900,
+        ig_app_secret=IG_APP_SECRET,
+        ig_verify_token=IG_VERIFY_TOKEN,
+        ig_access_token="ig-access-token",
+        ig_api_base="https://graph.instagram.example",
+        ig_api_version="v23.0",
+    )
+
+
+def make_note(**overrides) -> ReelNote:
+    """A representative note — the finance case, which exercises `steps`."""
+    data = dict(
+        title="The 50/30/20 budget rule",
+        category="finance",
+        one_liner="Split take-home pay into needs, wants and savings.",
+        takeaways=["50% needs", "30% wants", "20% savings"],
+        key_facts=[KeyFact(label="Savings share", value="20%")],
+        steps=["Start from take-home pay", "Multiply by 0.5 for needs"],
+        caveats=["Assumes stable monthly income"],
+        tags=["budget", "money"],
+    )
+    data.update(overrides)
+    return ReelNote(**data)
