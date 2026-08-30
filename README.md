@@ -158,7 +158,35 @@ from a browser where you are logged in (any "Netscape format" cookie exporter
 extension), save as `cookies.txt`, and point `YTDLP_COOKIES_FILE` at it. Treat
 that file like a password — it *is* your session.
 
+## Run it from your laptop first
+
+You do not need a host to use this. A tunnel gives your laptop a public HTTPS
+URL, which is all the Shortcut needs:
+
+```bash
+uvicorn app.main:app --port 8000            # one terminal
+cloudflared tunnel --url http://localhost:8000   # another; prints an https URL
+```
+
+Point the Shortcut at that URL and share a reel. Transcription runs locally and
+free, extraction runs on NVIDIA's free tier, and the total cost is nothing.
+
+The catch is that it only works while the laptop is awake — share a reel while
+it is closed and nothing happens until you re-share. For finding out whether
+you actually read the notes, that is a fine trade, and it beats spending a
+weekend on hosting for a habit you have not proven yet.
+
+Note that the free `cloudflared` URL changes every restart, so re-point the
+Shortcut each session. A named tunnel on a domain you own keeps it stable.
+
+**The DM path cannot work this way.** Meta needs a webhook URL that is
+reachable whenever someone shares, and it retries against a dead host. Do the
+Shortcut on a tunnel first; set up the DM path once you have somewhere
+permanent to put it.
+
 ## Deploy
+
+Worth doing once the habit is proven, not before.
 
 `fly.toml` is committed and already has the volume mount, the health check and
 a machine big enough for CPU whisper. `Dockerfile` installs ffmpeg and serves on
