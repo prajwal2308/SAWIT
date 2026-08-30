@@ -34,6 +34,8 @@ primary_region = "iad"
     timeout = "5s"
 
 [[vm]]
-  # faster-whisper on CPU wants the headroom; 512MB will OOM mid-transcribe.
+  # Sized for local faster-whisper, which will OOM below this. With
+  # SAWIT_ASR=hosted the transcription happens elsewhere and this can drop to
+  # shared-cpu-1x / 512mb.
   size = "shared-cpu-2x"
   memory = "2gb"

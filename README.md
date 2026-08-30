@@ -74,6 +74,44 @@ before pointing it at other people. Prefer the DM path wherever it works.
 Nothing here rehosts video on either path. Only derived notes, one transcript,
 and one thumbnail per reel are stored.
 
+## Which model writes the notes
+
+Two backends, set with `SAWIT_LLM`.
+
+**`anthropic`** (default) — the better extractor, noticeably so at the one job
+that matters most here: reconstructing a calculation into `steps` from a messy
+transcript. Needs `ANTHROPIC_API_KEY`.
+
+**`nvidia`** — any OpenAI-compatible endpoint. A free key from
+[build.nvidia.com](https://build.nvidia.com) (starts with `nvapi-`) gets you
+open models on NVIDIA's hosted inference at no cost:
+
+```bash
+SAWIT_LLM=nvidia
+NVIDIA_API_KEY=nvapi-...
+SAWIT_MODEL=meta/llama-4-maverick-17b-128e-instruct   # the default
+```
+
+**Pick a multimodal model.** Four frames go to the model alongside the
+transcript because reels put the numbers on screen and never say them; a
+text-only model silently loses exactly the part you wanted. `llama-4-maverick`
+and `meta/llama-3.2-90b-vision-instruct` are both free multimodal endpoints. If
+you deliberately choose a text-only model, set `SAWIT_VISION=false` so it is not
+sent images it cannot read.
+
+Structured output is requested as a strict JSON schema, with references inlined
+because that is where open models' constrained decoding tends to fall over. If a
+model rejects `json_schema` outright, it retries in plain JSON mode with the
+schema in the prompt — so a weaker model degrades instead of failing the note.
+
+`NVIDIA_BASE_URL` points anywhere OpenAI-compatible, so this backend is not
+actually NVIDIA-specific.
+
+**Expect a quality gap.** Open models handle the summary fine. Where they lose
+to Claude is the calculation: getting every step, in order, with the right
+numbers. That is the field this whole app exists for, so it is worth re-checking
+a few finance reels by hand before trusting it.
+
 ## Run it locally
 
 ```bash
@@ -218,8 +256,20 @@ sits in limbo.
 does the same thing. Deleting drops the note from search too.
 
 **The first transcription is slow.** faster-whisper downloads its model on
-first use (a few hundred MB). Subsequent runs are much faster. If CPU whisper
-is still too slow on your host, set `SAWIT_ASR=openai` with an `OPENAI_API_KEY`.
+first use (a few hundred MB). Subsequent runs are much faster.
+
+**The host is too small for whisper.** Local transcription is the only reason
+this needs a 2 GB machine. Move it off-box and the service becomes light enough
+for almost any free tier:
+
+```bash
+SAWIT_ASR=hosted
+ASR_BASE_URL=https://api.openai.com/v1     # or any OpenAI-compatible endpoint
+ASR_API_KEY=...
+ASR_MODEL=whisper-1
+```
+
+Nothing else changes, and `fly.toml` can then drop to `shared-cpu-1x` / 512 MB.
 
 ## Deliberately not built yet
 

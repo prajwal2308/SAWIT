@@ -88,7 +88,12 @@ def status(
         "notes": store.status_counts(),
         "ffmpeg": shutil.which("ffmpeg") is not None,
         "asr_backend": settings.asr_backend,
+        "llm_backend": settings.llm_backend,
         "model": settings.model,
+        "vision": settings.vision,
+        "llm_key_set": bool(
+            settings.nvidia_api_key if settings.llm_backend == "nvidia" else True
+        ),
         "instagram_dm": settings.instagram_enabled,
         "push": settings.push_enabled,
         "cookies_file": bool(settings.cookies_file),

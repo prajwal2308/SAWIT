@@ -1,11 +1,21 @@
-"""Turn a transcript plus a few stills into a structured note."""
+"""Turn a transcript plus a few stills into a structured note.
+
+Two backends. Anthropic is the better extractor, particularly at
+reconstructing a calculation into `steps`. Any OpenAI-compatible endpoint
+(`nvidia`) works too and is what the free tiers offer — pick a multimodal
+model there, or the on-screen numbers are lost.
+"""
 
 from __future__ import annotations
 
 import base64
+import json
+import logging
 from typing import Any
 
 from .schemas import ReelNote
+
+log = logging.getLogger(__name__)
 
 
 class ExtractionError(RuntimeError):
@@ -51,14 +61,28 @@ def extract(
     transcript: str,
     frames: list[bytes],
     model: str,
+    backend: str = "anthropic",
     source_title: str | None = None,
     uploader: str | None = None,
     description: str | None = None,
     client: Any | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
 ) -> ReelNote:
     if not transcript.strip() and not frames:
         raise ExtractionError("Nothing to work with: no transcript and no frames.")
 
+    prompt = _prompt(transcript, source_title, uploader, description)
+    if backend == "anthropic":
+        return _extract_anthropic(prompt, frames, model, client)
+    if backend == "nvidia":
+        return _extract_openai_compatible(prompt, frames, model, client, base_url, api_key)
+    raise ExtractionError(f"Unknown extraction backend {backend!r}.")
+
+
+def _extract_anthropic(
+    prompt: str, frames: list[bytes], model: str, client: Any | None
+) -> ReelNote:
     if client is None:
         import anthropic
 
@@ -70,13 +94,12 @@ def extract(
             "source": {
                 "type": "base64",
                 "media_type": "image/jpeg",
-                "data": base64.standard_b64encode(frame).decode("ascii"),
+                "data": _b64(frame),
             },
         }
         for frame in frames
     ]
-    content.append({"type": "text", "text": _prompt(transcript, source_title, uploader,
-                                                    description)})
+    content.append({"type": "text", "text": prompt})
 
     response = client.messages.parse(
         model=model,
@@ -94,6 +117,104 @@ def extract(
             f"No structured output returned (stop_reason={response.stop_reason})."
         )
     return response.parsed_output
+
+
+def _extract_openai_compatible(
+    prompt: str,
+    frames: list[bytes],
+    model: str,
+    client: Any | None,
+    base_url: str | None,
+    api_key: str | None,
+) -> ReelNote:
+    if client is None:
+        from openai import OpenAI
+
+        client = OpenAI(base_url=base_url, api_key=api_key)
+
+    content: list[dict[str, Any]] = [
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{_b64(frame)}"}}
+        for frame in frames
+    ]
+    content.append({"type": "text", "text": prompt})
+    messages = [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": content},
+    ]
+    schema = strict_schema(ReelNote)
+
+    try:
+        text = _chat(client, model, messages, {
+            "type": "json_schema",
+            "json_schema": {"name": "reel_note", "strict": True, "schema": schema},
+        })
+    except Exception as exc:
+        # Structured-output support varies across open models. Falling back to
+        # plain JSON mode with the schema in the prompt keeps the weaker ones
+        # usable instead of failing the note outright.
+        log.warning("json_schema rejected by %s (%s); retrying in JSON mode", model, exc)
+        nudged = list(messages)
+        nudged[0] = {
+            "role": "system",
+            "content": f"{SYSTEM}\n\nReply with JSON matching this schema exactly:\n"
+                       f"{json.dumps(schema)}",
+        }
+        text = _chat(client, model, nudged, {"type": "json_object"})
+
+    return _parse(text, model)
+
+
+def _chat(client: Any, model: str, messages: list, response_format: dict) -> str:
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        max_tokens=4000,
+        temperature=0.2,
+        response_format=response_format,
+    )
+    return response.choices[0].message.content or ""
+
+
+def _parse(text: str, model: str) -> ReelNote:
+    # Some models wrap JSON in a fenced block even when asked not to.
+    cleaned = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```")
+    try:
+        return ReelNote.model_validate_json(cleaned)
+    except Exception as exc:
+        raise ExtractionError(
+            f"{model} did not return a usable note ({exc}). "
+            f"First 200 characters: {cleaned[:200]!r}"
+        ) from exc
+
+
+def _b64(frame: bytes) -> str:
+    return base64.standard_b64encode(frame).decode("ascii")
+
+
+def strict_schema(model_cls: type) -> dict[str, Any]:
+    """A self-contained strict JSON schema.
+
+    `$ref`/`$defs` are where open models' constrained decoding tends to fall
+    over, so references are inlined and every object is closed.
+    """
+    raw = model_cls.model_json_schema()
+    defs = raw.pop("$defs", {})
+
+    def resolve(node: Any) -> Any:
+        if isinstance(node, list):
+            return [resolve(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        if "$ref" in node:
+            name = node["$ref"].rsplit("/", 1)[-1]
+            return resolve(defs[name])
+        node = {key: resolve(value) for key, value in node.items()}
+        if node.get("type") == "object":
+            node["additionalProperties"] = False
+            node["required"] = sorted(node.get("properties", {}))
+        return node
+
+    return resolve(raw)
 
 
 def _prompt(
