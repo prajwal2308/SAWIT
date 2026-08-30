@@ -122,17 +122,34 @@ that file like a password — it *is* your session.
 
 ## Deploy
 
-The `Dockerfile` installs ffmpeg and runs uvicorn on `$PORT`; it works as-is on
-Railway, Fly, or Render.
+`fly.toml` is committed and already has the volume mount, the health check and
+a machine big enough for CPU whisper. `Dockerfile` installs ffmpeg and serves on
+`$PORT`, so Railway and Render work off it too.
 
 ```bash
-fly launch --dockerfile Dockerfile
-fly volumes create data --size 1          # notes must outlive a redeploy
-fly secrets set SAWIT_API_KEY=... ANTHROPIC_API_KEY=... NTFY_TOPIC=...
+fly launch --no-deploy --copy-config      # keeps the committed fly.toml
+fly volumes create sawit_data --size 1    # notes must outlive a redeploy
+fly secrets set \
+  SAWIT_API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+  ANTHROPIC_API_KEY=sk-ant-... \
+  NTFY_TOPIC=sawit-something-long-and-random
+fly deploy
+fly secrets set PUBLIC_BASE_URL=https://<your-app>.fly.dev   # makes pushes tappable
 ```
 
-Mount the volume at `/data` and set `SAWIT_DB=/data/sawit.sqlite3`. Set
-`PUBLIC_BASE_URL` to your deployed URL so notifications are tappable.
+Two settings in `fly.toml` are deliberate, not defaults: `auto_stop_machines`
+is off because stopping a machine mid-transcription loses the note, and the VM
+is 2 GB because faster-whisper will OOM below that.
+
+### Check it came up
+
+```bash
+curl -H "X-API-Key: $SAWIT_API_KEY" https://<your-app>.fly.dev/api/status
+```
+
+That reports what is actually wired up — ffmpeg, the ASR backend, whether
+Instagram DMs and push are configured, and note counts by state. It is the
+fastest way to find the one env var you forgot.
 
 ## Push notifications
 
@@ -185,14 +202,37 @@ Set `SAWIT_ASR=openai` with an `OPENAI_API_KEY` if CPU whisper is too slow
 on your host — it is the one place this project talks to a non-Anthropic model,
 because Claude does not do speech-to-text.
 
+## When something goes wrong
+
+**A note says "failed".** Open it — the error is on the page, and so is a
+**Retry** button. Retry re-runs through the page URL, so it works for anything
+shared as a link. A reel that arrived as a DM attachment cannot be retried
+after Meta's CDN link expires; the app says so and asks you to re-share it.
+
+**A note is stuck on "working…".** It is not. Work runs in-process, so a
+redeploy or crash kills whatever was mid-flight; on the next boot those notes
+are marked failed with "Interrupted by a restart" and can be retried. Nothing
+sits in limbo.
+
+**Deleting.** Every note page has a Delete button, and `DELETE /api/notes/{id}`
+does the same thing. Deleting drops the note from search too.
+
+**The first transcription is slow.** faster-whisper downloads its model on
+first use (a few hundred MB). Subsequent runs are much faster. If CPU whisper
+is still too slow on your host, set `SAWIT_ASR=openai` with an `OPENAI_API_KEY`.
+
 ## Deliberately not built yet
 
 Wait until the habit is proven before adding: a real job queue (background tasks
-run in-process, which is fine for one user), multi-user auth, App Review for
-other people's accounts, the Facebook Page equivalent of the DM path, and the
-finance-reel calculator that turns `steps` into inputs you can edit. The open
-question this is meant to answer is not "does it work" — it is whether you
-actually read the replies.
+run in-process, which is fine for one user and is why the restart recovery
+above exists), multi-user auth, App Review for other people's accounts, the
+Facebook Page equivalent of the DM path, and the finance-reel calculator that
+turns `steps` into inputs you can edit. The open question this is meant to
+answer is not "does it work" — it is whether you actually read the replies.
+
+The nine categories in `app/schemas.py` are a guess. If your reels cluster
+somewhere that is not on that list, they will land in `other`; add the category
+once you can see the pattern rather than guessing at it now.
 
 ## Tests
 
@@ -200,7 +240,12 @@ actually read the replies.
 cd sawit && python -m pytest -q && python -m ruff check app tests
 ```
 
-The suite covers storage and search, the extraction request shape, webhook
-signature checking and payload parsing, delivery routing, and the HTTP surface.
-It does not cover the yt-dlp download or a live Meta webhook — both depend on
-Meta's servers, so they fail loudly at runtime instead.
+The suite covers storage, search and category filtering, the extraction request
+shape, webhook signature checking and payload parsing, delivery routing,
+restart recovery, and the HTTP surface. `test_schema_contract.py` runs the
+Anthropic SDK's own schema transform locally, so an SDK upgrade that would
+break extraction fails in CI rather than against a live reel.
+
+It does not cover the yt-dlp download, a live Meta webhook, or a real Claude
+call — those depend on someone else's servers, so they fail loudly at runtime
+instead.

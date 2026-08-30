@@ -65,8 +65,13 @@ class Store:
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path, timeout=30.0)
         conn.row_factory = sqlite3.Row
+        # Two reels shared at once means concurrent writers. WAL lets a reader
+        # proceed during a write, and busy_timeout waits for the lock instead
+        # of failing the note outright.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
         try:
             yield conn
             conn.commit()
@@ -153,6 +158,47 @@ class Store:
                 "INSERT INTO notes_fts (rowid, title, one_liner, body, tags) VALUES (?,?,?,?,?)",
                 (rowid, note.title, note.one_liner, body, " ".join(note.tags)),
             )
+
+    def status_counts(self) -> dict[str, int]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM notes GROUP BY status"
+            ).fetchall()
+        return {r["status"]: r["n"] for r in rows}
+
+    def recover_orphans(self) -> int:
+        """Fail any note left mid-flight by a restart.
+
+        Work runs in-process, so a redeploy or a crash kills whatever was in
+        flight. Anything still `pending` at startup is therefore orphaned, and
+        would otherwise sit in the list saying "working…" forever. Marking it
+        failed makes it visible and retryable. Assumes one process — which the
+        Dockerfile's single uvicorn guarantees.
+        """
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "UPDATE notes SET status='failed', error=?, updated_at=? "
+                "WHERE status='pending'",
+                ("Interrupted by a restart. Retry it.", _now()),
+            )
+        return cursor.rowcount
+
+    def reset_to_pending(self, note_id: str) -> bool:
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "UPDATE notes SET status='pending', error=NULL, updated_at=? WHERE id=?",
+                (_now(), note_id),
+            )
+        return cursor.rowcount > 0
+
+    def delete(self, note_id: str) -> bool:
+        with self._conn() as conn:
+            row = conn.execute("SELECT rowid FROM notes WHERE id=?", (note_id,)).fetchone()
+            if row is None:
+                return False
+            conn.execute("DELETE FROM notes_fts WHERE rowid=?", (row["rowid"],))
+            conn.execute("DELETE FROM notes WHERE id=?", (note_id,))
+        return True
 
     def get(self, note_id: str) -> dict[str, Any] | None:
         with self._conn() as conn:

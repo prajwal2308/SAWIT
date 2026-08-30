@@ -131,3 +131,59 @@ def test_a_category_filter_cannot_be_injected(settings):
     stock_the_store(store)
 
     assert store.recent(category="finance' OR '1'='1") == []
+
+
+def test_a_restart_does_not_leave_notes_stuck_working(settings):
+    store = Store(settings.db_path)
+    orphan = store.create_pending("https://example.com/reel/interrupted")
+    done = store.create_pending("https://example.com/reel/done")
+    store.save_note(done, make_note(), transcript="finished")
+
+    assert store.recover_orphans() == 1
+
+    assert store.get(orphan)["status"] == "failed"
+    assert "Retry" in store.get(orphan)["error"]
+    # A finished note is not touched.
+    assert store.get(done)["status"] == "ready"
+
+
+def test_recovery_is_a_no_op_when_nothing_was_in_flight(settings):
+    store = Store(settings.db_path)
+    store.save_note(store.create_pending("https://x.test/r"), make_note(), transcript="t")
+
+    assert store.recover_orphans() == 0
+
+
+def test_a_failed_note_can_be_reset_for_another_run(settings):
+    store = Store(settings.db_path)
+    note_id = store.create_pending("https://x.test/r")
+    store.mark_failed(note_id, "login required")
+
+    assert store.reset_to_pending(note_id) is True
+
+    note = store.get(note_id)
+    assert note["status"] == "pending"
+    assert note["error"] is None
+    assert store.reset_to_pending("nope") is False
+
+
+def test_deleting_a_note_also_drops_it_from_search(settings):
+    store = Store(settings.db_path)
+    note_id = store.create_pending("https://x.test/r")
+    store.save_note(note_id, make_note(), transcript="fifty thirty twenty")
+    assert len(store.search("budget")) == 1
+
+    assert store.delete(note_id) is True
+
+    assert store.get(note_id) is None
+    assert store.search("budget") == []
+    assert store.delete(note_id) is False
+
+
+def test_status_counts_cover_every_state(settings):
+    store = Store(settings.db_path)
+    store.save_note(store.create_pending("https://x.test/1"), make_note(), transcript="t")
+    store.mark_failed(store.create_pending("https://x.test/2"), "boom")
+    store.create_pending("https://x.test/3")
+
+    assert store.status_counts() == {"ready": 1, "failed": 1, "pending": 1}

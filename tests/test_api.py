@@ -238,3 +238,86 @@ def test_an_empty_category_says_so(client):
     page = client.get("/", params={"k": API_KEY, "category": "fitness"}).text
 
     assert "Nothing in fitness yet." in page
+
+
+def test_status_reports_what_is_wired_up(client):
+    stock(client)
+
+    body = client.get("/api/status", headers={"X-API-Key": API_KEY}).json()
+
+    assert body["notes"] == {"ready": 3}
+    assert body["asr_backend"] == "faster-whisper"
+    assert body["instagram_dm"] is True
+    assert body["push"] is False
+    assert client.get("/api/status").status_code == 401
+
+
+def test_a_failed_note_can_be_retried(client):
+    note_id = client.store.create_pending("https://www.instagram.com/reel/ABC/")
+    client.store.mark_failed(note_id, "ffmpeg blew up")
+
+    response = client.post(f"/notes/{note_id}/retry", headers={"X-API-Key": API_KEY})
+
+    assert response.status_code == 200
+    assert client.store.get(note_id)["status"] == "pending"
+    assert client.started[0][1].page_url == "https://www.instagram.com/reel/ABC/"
+
+
+def test_retrying_an_expired_dm_attachment_explains_itself(client):
+    note_id = client.store.create_pending("instagram-dm:mid.123")
+    client.store.mark_failed(note_id, "download failed")
+
+    response = client.post(f"/notes/{note_id}/retry", headers={"X-API-Key": API_KEY})
+
+    assert response.status_code == 400
+    assert "Share it again" in response.json()["detail"]
+    assert client.started == []
+
+
+def test_retrying_a_missing_note_is_404(client):
+    assert client.post("/notes/nope/retry", headers={"X-API-Key": API_KEY}).status_code == 404
+
+
+def test_a_note_can_be_deleted_through_the_api(client):
+    note_id = client.store.create_pending("https://x.test/r")
+    client.store.save_note(note_id, make_note(), transcript="t")
+
+    response = client.delete(f"/api/notes/{note_id}", headers={"X-API-Key": API_KEY})
+
+    assert response.status_code == 200
+    assert client.store.get(note_id) is None
+    assert client.delete(f"/api/notes/{note_id}",
+                         headers={"X-API-Key": API_KEY}).status_code == 404
+
+
+def test_deleting_from_the_page_returns_you_to_the_list(client):
+    note_id = client.store.create_pending("https://x.test/r")
+    client.store.save_note(note_id, make_note(), transcript="t")
+
+    response = client.post(f"/notes/{note_id}/delete", params={"k": API_KEY},
+                           follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/?k={API_KEY}"
+    assert client.store.get(note_id) is None
+
+
+def test_a_failed_note_offers_retry_and_delete(client):
+    note_id = client.store.create_pending("https://x.test/r")
+    client.store.mark_failed(note_id, "login required")
+
+    page = client.get(f"/notes/{note_id}", params={"k": API_KEY}).text
+
+    assert f"/notes/{note_id}/retry" in page
+    assert f"/notes/{note_id}/delete" in page
+    assert "login required" in page
+
+
+def test_a_finished_note_offers_delete_but_not_retry(client):
+    note_id = client.store.create_pending("https://x.test/r")
+    client.store.save_note(note_id, make_note(), transcript="t")
+
+    page = client.get(f"/notes/{note_id}", params={"k": API_KEY}).text
+
+    assert f"/notes/{note_id}/delete" in page
+    assert "/retry" not in page

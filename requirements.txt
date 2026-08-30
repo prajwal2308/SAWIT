@@ -2,6 +2,6 @@ fastapi>=0.110
 uvicorn[standard]>=0.27
 pydantic>=2.6
 httpx>=0.27
-anthropic>=0.69
+anthropic>=1.0,<2
 yt-dlp>=2025.1.15
 faster-whisper>=1.0.3

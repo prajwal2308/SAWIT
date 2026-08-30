@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import html
+import logging
 import secrets
+import shutil
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, field_validator
 
 from . import instagram
@@ -17,7 +21,25 @@ from .config import Settings, get_settings
 from .pipeline import Source, process
 from .store import Store
 
-app = FastAPI(title="Sawit", docs_url=None, redoc_url=None)
+log = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # Fail fast on missing config rather than at the first shared reel, and
+    # clear out anything a restart left mid-flight.
+    settings = get_settings()
+    orphans = get_store().recover_orphans()
+    if orphans:
+        log.warning("Marked %d interrupted note(s) as failed; they can be retried", orphans)
+    log.info(
+        "Sawit ready — instagram=%s push=%s asr=%s",
+        settings.instagram_enabled, settings.push_enabled, settings.asr_backend,
+    )
+    yield
+
+
+app = FastAPI(title="Sawit", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 @lru_cache(maxsize=1)
@@ -52,7 +74,26 @@ class IngestRequest(BaseModel):
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
+    """Unauthenticated and deliberately dull — this is the platform's probe."""
     return {"status": "ok"}
+
+
+@app.get("/api/status", dependencies=[Depends(require_key)])
+def status(
+    settings: Settings = Depends(get_settings),
+    store: Store = Depends(get_store),
+) -> dict[str, Any]:
+    """What is actually wired up. The first thing to check on a fresh deploy."""
+    return {
+        "notes": store.status_counts(),
+        "ffmpeg": shutil.which("ffmpeg") is not None,
+        "asr_backend": settings.asr_backend,
+        "model": settings.model,
+        "instagram_dm": settings.instagram_enabled,
+        "push": settings.push_enabled,
+        "cookies_file": bool(settings.cookies_file),
+        "public_base_url": settings.public_base_url,
+    }
 
 
 @app.post("/ingest", status_code=202, dependencies=[Depends(require_key)])
@@ -150,6 +191,56 @@ def api_note(note_id: str, store: Store = Depends(get_store)) -> dict[str, Any]:
     return note
 
 
+@app.post("/notes/{note_id}/retry", dependencies=[Depends(require_key)])
+def retry(
+    note_id: str,
+    background: BackgroundTasks,
+    k: str | None = None,
+    settings: Settings = Depends(get_settings),
+    store: Store = Depends(get_store),
+) -> Response:
+    note = store.get(note_id)
+    if note is None:
+        raise HTTPException(status_code=404, detail="No such note.")
+    if not note["url"].startswith(("http://", "https://")):
+        # A DM note whose media URL Meta already expired, and no permalink came
+        # with it. There is nothing left to fetch — the reel has to be re-shared.
+        raise HTTPException(
+            status_code=400,
+            detail="That reel arrived as a DM attachment and its media link has expired. "
+                   "Share it again to reprocess it.",
+        )
+
+    store.reset_to_pending(note_id)
+    # No reply target on a retry: the DM window has usually closed by now, so
+    # the result comes back by push instead.
+    background.add_task(process, note_id, Source(page_url=note["url"]), settings, store)
+    return _redirect_or_json(k, f"/notes/{note_id}", {"id": note_id, "status": "pending"})
+
+
+@app.post("/notes/{note_id}/delete", dependencies=[Depends(require_key)])
+def delete_note_form(
+    note_id: str, k: str | None = None, store: Store = Depends(get_store)
+) -> Response:
+    if not store.delete(note_id):
+        raise HTTPException(status_code=404, detail="No such note.")
+    return _redirect_or_json(k, "/", {"deleted": note_id})
+
+
+@app.delete("/api/notes/{note_id}", dependencies=[Depends(require_key)])
+def delete_note(note_id: str, store: Store = Depends(get_store)) -> dict[str, str]:
+    if not store.delete(note_id):
+        raise HTTPException(status_code=404, detail="No such note.")
+    return {"deleted": note_id}
+
+
+def _redirect_or_json(k: str | None, path: str, payload: dict) -> Response:
+    """Browsers came from a form and want a page; the API wants JSON."""
+    if k:
+        return RedirectResponse(f"{path}?k={k}", status_code=303)
+    return JSONResponse(payload)
+
+
 @app.get("/notes/{note_id}/thumb.jpg", dependencies=[Depends(require_key)])
 def thumbnail(note_id: str, store: Store = Depends(get_store)) -> Response:
     blob = store.get_thumbnail(note_id)
@@ -227,8 +318,12 @@ def note_page(
 
     if note["status"] != "ready":
         detail = esc(note.get("error") or "Still working on it.")
-        return HTMLResponse(_page(f"<a href='/?k={key}'>&larr; all notes</a>"
-                                  f"<h1>{esc(note['status'])}</h1><p>{detail}</p>"))
+        return HTMLResponse(_page(
+            f"<a href='/?k={key}'>&larr; all notes</a>"
+            f"<h1>{esc(note['status'])}</h1><p>{detail}</p>"
+            f"<p><a href='{esc(note['url'])}'>The original reel</a></p>"
+            f"{_actions(note, key)}"
+        ))
 
     def section(heading: str, items: list, render) -> str:
         if not items:
@@ -251,8 +346,23 @@ def note_page(
         section("Caveats", note["caveats"], lambda c: f"<li>{esc(c)}</li>"),
         f"<p><a href='{esc(note['url'])}'>Open the original reel</a></p>",
         f"<details><summary>Transcript</summary><p>{esc(note['transcript'])}</p></details>",
+        _actions(note, key),
     ]
     return HTMLResponse(_page("".join(parts)))
+
+
+def _actions(note: dict[str, Any], key: str) -> str:
+    """Retry and delete. Forms, not links — a link that deletes is a trap for
+    anything that prefetches."""
+    note_id = html.escape(note["id"])
+    buttons = ""
+    if note["status"] == "failed":
+        buttons += (f"<form method=post action='/notes/{note_id}/retry?k={key}'>"
+                    f"<button>Retry</button></form>")
+    buttons += (f"<form method=post action='/notes/{note_id}/delete?k={key}' "
+                f"onsubmit=\"return confirm('Delete this note?')\">"
+                f"<button class=danger>Delete</button></form>")
+    return f"<div class=actions>{buttons}</div>"
 
 
 def _card(note: dict[str, Any], key: str) -> str:
@@ -299,4 +409,8 @@ font-size:.85rem;text-decoration:none;white-space:nowrap}}
 .chip.on{{background:var(--fg);color:var(--bg);border-color:var(--fg)}}
 .chip.on span{{color:var(--bg);opacity:.7}}
 details{{margin-top:1.5rem;color:var(--dim)}}
+.actions{{display:flex;gap:.5rem;margin:2rem 0 1rem}}
+.actions button{{padding:.5rem .9rem;font-size:.9rem;border:1px solid var(--line);
+border-radius:.5rem;background:transparent;color:var(--fg);cursor:pointer}}
+.actions button.danger{{color:#c0392b;border-color:#c0392b}}
 </style></head><body>{body}</body></html>"""
