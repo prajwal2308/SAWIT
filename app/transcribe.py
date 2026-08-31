@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import threading
 from functools import lru_cache
 from pathlib import Path
 
 
 class TranscriptionError(RuntimeError):
     pass
+
+
+# Share two reels at once and both land in the threadpool together. Each would
+# miss the cache below, build its own WhisperModel, and the pair is enough to
+# OOM a small box — the model is the memory, and it is why this needs 2 GB at
+# all. One at a time: the second share waits a few seconds rather than killing
+# the container and taking the first one with it.
+_LOCAL_WHISPER = threading.Lock()
 
 
 def transcribe(
@@ -40,9 +49,12 @@ def _load_local_model(model_size: str):
 
 
 def _faster_whisper(audio_path: Path, model_size: str) -> str:
-    model = _load_local_model(model_size)
-    segments, _info = model.transcribe(str(audio_path), vad_filter=True)
-    return " ".join(segment.text.strip() for segment in segments).strip()
+    with _LOCAL_WHISPER:
+        model = _load_local_model(model_size)
+        segments, _info = model.transcribe(str(audio_path), vad_filter=True)
+        # segments is a generator: draining it inside the lock is what keeps the
+        # decode serialised, not just the model load.
+        return " ".join(segment.text.strip() for segment in segments).strip()
 
 
 def _hosted_whisper(
