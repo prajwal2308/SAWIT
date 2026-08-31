@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from .schemas import ReelNote
@@ -60,6 +61,7 @@ def _now() -> str:
 class Store:
     def __init__(self, path: str) -> None:
         self.path = path
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as conn:
             conn.executescript(SCHEMA)
 
