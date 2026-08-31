@@ -187,6 +187,85 @@ class IngestRequest(BaseModel):
         raise ValueError("No http(s) URL found in the shared text.")
 
 
+@app.get("/manifest.webmanifest", include_in_schema=False)
+def manifest() -> JSONResponse:
+    """Installs Sawit to the home screen — and, on Android, into the share sheet.
+
+    share_target is why this file exists. Chrome registers an installed PWA as a
+    system share target, so sharing a reel offers Sawit directly: no Shortcut to
+    build, no key to paste, nothing to configure. Safari does not implement it,
+    which is why iOS still needs the Shortcut.
+    """
+    return JSONResponse(
+        {
+            "name": "Sawit",
+            "short_name": "Sawit",
+            "description": "Reels, in words you can search.",
+            "start_url": "/",
+            "scope": "/",
+            "display": "standalone",
+            "background_color": "#000000",
+            "theme_color": "#000000",
+            "icons": [
+                {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml",
+                 "purpose": "any maskable"},
+            ],
+            "share_target": {
+                "action": "/share",
+                "method": "GET",
+                "params": {"title": "title", "text": "text", "url": "url"},
+            },
+        },
+        media_type="application/manifest+json",
+    )
+
+
+@app.get("/icon.svg", include_in_schema=False)
+def icon() -> Response:
+    """One glyph, no binaries in the repo: a bookmark, which is the whole idea."""
+    svg = (
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'>"
+        "<rect width='512' height='512' rx='114' fill='#0a84ff'/>"
+        "<path d='M176 118h160a26 26 0 0 1 26 26v250a12 12 0 0 1-19 10l-83-60a12 12 0 0 0-14 0"
+        "l-83 60a12 12 0 0 1-19-10V144a26 26 0 0 1 26-26z' fill='#fff'/>"
+        "</svg>"
+    )
+    return Response(svg, media_type="image/svg+xml",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/share", dependencies=[Depends(require_key)])
+def share_target(
+    request: Request,
+    background: BackgroundTasks,
+    url: str | None = None,
+    text: str | None = None,
+    title: str | None = None,
+    settings: Settings = Depends(get_settings),
+    store: Store = Depends(get_store),
+) -> Response:
+    """Where Android's share sheet lands.
+
+    Which field holds the link is up to the sharing app: Instagram tends to put
+    it in `text`, others use `url`, and some bury it in a sentence — so try them
+    all and let IngestRequest pull the URL out of whatever arrives.
+    """
+    for candidate in (url, text, title):
+        if not candidate:
+            continue
+        try:
+            link = IngestRequest(url=candidate).url
+        except ValidationError:
+            continue
+        existing = store.find_written(link)
+        if existing:
+            return _redirect(f"/notes/{existing}")
+        note_id = store.create_pending(link)
+        background.add_task(process, note_id, Source(page_url=link), settings, store)
+        return _redirect(f"/notes/{note_id}")
+    return _redirect("/?error=There+was+no+link+in+what+you+shared.")
+
+
 @app.get("/login", response_class=HTMLResponse)
 def login_page(error: str | None = None, joined: str | None = None) -> HTMLResponse:
     return HTMLResponse(_auth_page("in", error, joined))
@@ -249,6 +328,7 @@ def account_page(
     error: str | None = None,
     saved: str | None = None,
     user: dict[str, Any] = Depends(current_user),
+    settings: Settings = Depends(get_settings),
 ) -> HTMLResponse:
     """The key the Shortcut sends, and a way in that is not a URL with a key in it."""
     unclaimed = user["email"] == OWNER_EMAIL
@@ -280,10 +360,63 @@ def account_page(
         "<p class=lede>The Shortcut sends this as <code>X-API-Key</code>. "
         "It opens your notes and nobody else's — treat it like a password.</p>"
         f"<pre class=keybox>{html.escape(user['api_key'])}</pre>"
+        f"{_setup_help(settings, user['api_key'])}"
         f"{claim}"
         "<form method=post action='/logout' class=actions>"
         "<button class=danger>Sign out</button></form>"
     ))
+
+
+def _setup_help(settings: Settings, api_key: str) -> str:
+    """Getting a reel in, in the order it actually happens.
+
+    Building the Shortcut by hand is fifteen steps and three places to go wrong,
+    and it is where people give up. iOS will not let a web page install one, but
+    it will install one from an iCloud link in two taps — so when a deployment
+    has that link, it leads.
+    """
+    key = html.escape(api_key, quote=True)
+    if settings.shortcut_url:
+        install = (
+            f"<a class=row href='{html.escape(settings.shortcut_url, quote=True)}'>"
+            f"<span>Add the Save Reel shortcut</span><span class=chev>&rsaquo;</span></a>"
+            "<p class=lede>Two taps: <b>Add Shortcut</b>, then open it once and put "
+            "your key in the <code>X-API-Key</code> header — it arrives with a "
+            "placeholder, because a shortcut anyone can install cannot carry "
+            "somebody else's key.</p>"
+        )
+    else:
+        install = (
+            "<p class=lede>No one-tap installer is set up for this deployment yet. "
+            "Build the Shortcut once by hand, then <b>Share \u2192 Copy iCloud Link</b> "
+            "and set that link as <code>SAWIT_SHORTCUT_URL</code> — after that "
+            "everyone else installs it in two taps instead of fifteen steps.</p>"
+        )
+
+    return (
+        "<h2>Saving reels from your iPhone</h2>"
+        + install
+        + "<details class=row-d><summary><span>Or build it by hand</span>"
+        "<span class=chev>&rsaquo;</span></summary><p>"
+        "In <b>Shortcuts</b>: a new shortcut called <i>Save Reel</i> with one "
+        "<b>Get Contents of URL</b> action. Method <b>POST</b>. Headers "
+        f"<code>X-API-Key: {key}</code> and <code>Content-Type: application/json</code>. "
+        "Request body <b>JSON</b>, one Text field named <code>url</code>, and its "
+        "value must be the blue <b>Shortcut Input</b> variable rather than typed text. "
+        "Then \u2139\ufe0f \u2192 <b>Show in Share Sheet</b>, types <b>URLs</b> and "
+        "<b>Text</b> only, and no other action \u2014 no \u201cShow Result\u201d is "
+        "what makes the sheet close instantly."
+        "<br><br><b>It will not appear until you enable it once:</b> share anything, "
+        "scroll to the bottom of the list, <b>Edit Actions</b>, switch <i>Save Reel</i> "
+        "on, and tap the green + to pin it where you can reach it."
+        "</p></details>"
+        "<details class=row-d><summary><span>Or skip it entirely</span>"
+        "<span class=chev>&rsaquo;</span></summary><p>"
+        "Add this page to your home screen and use the <b>Add</b> tab. Copy a reel "
+        "link in Instagram, paste, Save. Two more taps than the share sheet, and "
+        "nothing to set up at all."
+        "</p></details>"
+    )
 
 
 @app.post("/account/credentials", dependencies=[Depends(require_key)])
@@ -710,6 +843,8 @@ def _tabs(key: str, mode: str | None, q: str | None, category: str | None) -> st
               "<path d='M16.5 16.5L21 21'/></svg>")
     add_i = ("<svg viewBox='0 0 24 24' aria-hidden=true><rect x='3' y='3' width='18' "
              "height='18' rx='5'/><path d='M12 8v8M8 12h8'/></svg>")
+    me_i = ("<svg viewBox='0 0 24 24' aria-hidden=true><circle cx='12' cy='8.5' r='4'/>"
+            "<path d='M4.5 20.5a7.5 7.5 0 0 1 15 0'/></svg>")
 
     def tab(href: str, icon: str, label: str, on: bool) -> str:
         return (f"<a class='tab{' on' if on else ''}' href='{html.escape(href, quote=True)}'>"
@@ -723,6 +858,7 @@ def _tabs(key: str, mode: str | None, q: str | None, category: str | None) -> st
         + tab(f"/{keeping}{'&' if keeping else '?'}mode=search", find_i, "Search",
               mode == "search")
         + tab(f"/{_qs(k=key)}{'?' if not key else '&'}mode=add", add_i, "Add", mode == "add")
+        + tab(f"/account{_qs(k=key)}", me_i, "Account", False)
         + "</nav>"
     )
 
@@ -933,6 +1069,8 @@ def _page(body: str, full_bleed: bool = False) -> str:
 <meta name=theme-color content="#000000" media="(prefers-color-scheme:dark)">
 <meta name=apple-mobile-web-app-capable content=yes>
 <meta name=apple-mobile-web-app-title content=Sawit>
+<link rel=manifest href=/manifest.webmanifest>
+<link rel=apple-touch-icon href=/icon.svg>
 <title>Sawit</title><style>
 :root{{
   color-scheme:light dark;
@@ -992,7 +1130,7 @@ ul{{margin:.2rem 0;padding-left:1.15rem}} li{{margin:.35rem 0}}
 /* Controls sit where the thumb is. */
 .tabs{{
   position:fixed;left:0;right:0;bottom:0;z-index:20;
-  display:grid;grid-template-columns:repeat(4,1fr);
+  display:grid;grid-template-columns:repeat(5,1fr);
   padding:.35rem .4rem calc(.3rem + env(safe-area-inset-bottom));
   background:var(--chrome);
   -webkit-backdrop-filter:saturate(180%) blur(22px);

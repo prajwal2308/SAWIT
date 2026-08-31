@@ -37,6 +37,11 @@ class Settings:
     # Meaning-based search alongside the keyword index. Empty model disables it,
     # and the service runs exactly as before.
     embed_model: str
+    # An iCloud link to the Save Reel shortcut. iOS cannot install a shortcut
+    # from a web page, but it can install one from an iCloud link in two taps —
+    # which is the difference between people using this and not. Made once from
+    # a phone that already has the shortcut: Share -> Copy iCloud Link.
+    shortcut_url: str | None
 
     asr_backend: str
     whisper_model: str
@@ -109,6 +114,7 @@ def get_settings() -> Settings:
         ).rstrip("/"),
         vision=_flag("SAWIT_VISION", default=True),
         embed_model=os.environ.get("SAWIT_EMBED_MODEL", DEFAULT_EMBED_MODEL).strip(),
+        shortcut_url=(os.environ.get("SAWIT_SHORTCUT_URL") or "").strip() or None,
         asr_backend=os.environ.get("SAWIT_ASR", "faster-whisper"),
         whisper_model=os.environ.get("SAWIT_WHISPER_MODEL", "small"),
         asr_model=os.environ.get("ASR_MODEL", "whisper-1"),

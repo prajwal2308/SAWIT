@@ -194,3 +194,27 @@ def test_claiming_cannot_steal_an_email_in_use(web, settings):
                         headers={"X-API-Key": API_KEY}, follow_redirects=False)
 
     assert "another+account" in response.headers["location"]
+
+
+def test_the_account_page_leads_with_the_one_tap_installer(web, settings):
+    """Building the Shortcut by hand is where people give up. When a deployment
+    has an iCloud link, that is what should be in front of them."""
+    from dataclasses import replace as dc_replace
+
+    link = "https://www.icloud.com/shortcuts/deadbeef"
+    app.dependency_overrides[get_settings] = lambda: dc_replace(
+        settings, shortcut_url=link)
+    bootstrap_owner(web.store, settings)
+
+    page = web.get("/account", headers={"X-API-Key": API_KEY}).text
+
+    assert link in page
+    assert "Add the Save Reel shortcut" in page
+    # The manual recipe stays, folded away rather than removed.
+    assert "Or build it by hand" in page
+
+
+def test_without_a_link_it_says_how_to_make_one(web, settings):
+    bootstrap_owner(web.store, settings)
+    page = web.get("/account", headers={"X-API-Key": API_KEY}).text
+    assert "SAWIT_SHORTCUT_URL" in page
