@@ -83,9 +83,12 @@ class Settings:
         return bool(self.ig_app_secret and self.ig_verify_token and self.ig_access_token)
 
 
-# Free multimodal endpoint on build.nvidia.com. Reads the on-screen text,
-# which a text-only model cannot do — see SAWIT_VISION.
-DEFAULT_NVIDIA_MODEL = "meta/llama-4-maverick-17b-128e-instruct"
+# Free multimodal endpoint on build.nvidia.com. Reads the on-screen text, which
+# a text-only model cannot do — see SAWIT_VISION. This one is chosen for a
+# specific reason: it takes up to 12 images per request, and the llama vision
+# models take exactly one. A reel puts its numbers on screen across the whole
+# clip, so one frame is not enough to read it.
+DEFAULT_NVIDIA_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5"
 
 # Retrieval vectors, from the same OpenAI-compatible endpoint as the extraction,

@@ -4,6 +4,15 @@
 
 Send a reel to it. Get the point back. Never rewatch.
 
+> **Status: finished, not maintained.** It works end to end and is deployed —
+> shared reels become searchable notes in about a minute. Development stopped
+> because the honest answer to "would I open this every day?" turned out to be
+> no: Instagram's own Saved folder is where people already look, and no amount
+> of polish moves a habit that is not there. The code is here because the parts
+> that were hard to get right — reading text off frames, meaning-based search,
+> per-account isolation, and eight production-only bugs — are worth more written
+> down than deleted. Issues and forks welcome; expect no roadmap.
+
 Deliberately **not** an App Store app. There are two ways in, and neither needs
 an Apple Developer account, a Mac, or App Store review.
 
@@ -24,9 +33,9 @@ Facebook reels, and anything else with a URL.
                                  ├─► 200/202 immediately, nothing to wait on
  share sheet ─► Shortcut ─► /ingest ──┘   (yt-dlp scrapes the page URL)
                                  │
-               ffmpeg ───────────┤ 16 kHz mono audio + 4 stills
+               ffmpeg ───────────┤ 16 kHz mono audio + 8 stills
                whisper ──────────┤ transcript
-               Claude ───────────┤ typed note (title, takeaways,
+               a model ──────────┤ typed note (title, takeaways,
                                  │   steps, key facts, caveats)
                SQLite + FTS5 ────┤ stored and searchable
                                  └─► reply in the DM thread, or push via ntfy
@@ -34,9 +43,11 @@ Facebook reels, and anything else with a URL.
 
 Two design decisions worth knowing:
 
-**The stills are not decoration.** Reels routinely put the numbers, formulas and
-lists on screen and never say them out loud. Four frames go to Claude alongside
-the transcript, so a "how to calculate X" reel yields the actual calculation.
+**The stills are not decoration — they are usually the whole source.** Reels
+routinely put the numbers, formulas and lists on screen and never say them out
+loud. Eight frames go to the model alongside the transcript, so a "how to
+calculate X" reel yields the actual calculation. In practice most reels tested
+had no speech at all, and the transcript was empty.
 
 **One note schema, not one per category.** Category-specific guidance lives in
 the prompt; the schema stays flat. The `steps` field is the one that earns its
@@ -89,15 +100,18 @@ open models on NVIDIA's hosted inference at no cost:
 ```bash
 SAWIT_LLM=nvidia
 NVIDIA_API_KEY=nvapi-...
-SAWIT_MODEL=meta/llama-4-maverick-17b-128e-instruct   # the default
+SAWIT_MODEL=nvidia/nemotron-3-nano-omni-30b-a3b-reasoning   # the default
 ```
 
-**Pick a multimodal model.** Four frames go to the model alongside the
-transcript because reels put the numbers on screen and never say them; a
-text-only model silently loses exactly the part you wanted. `llama-4-maverick`
-and `meta/llama-3.2-90b-vision-instruct` are both free multimodal endpoints. If
-you deliberately choose a text-only model, set `SAWIT_VISION=false` so it is not
-sent images it cannot read.
+**Pick a multimodal model, and check how many images it takes.** Frames go to
+the model alongside the transcript because reels put the numbers on screen and
+never say them out loud — in testing, *every* reel transcribed to nothing and
+the notes were written entirely from the frames. The default is chosen because
+it accepts **12 images per request**; both `llama-3.2-vision` models accept
+exactly one, which is not enough to read a reel whose text changes as it plays.
+At one frame the extractor returned the words on a single card as the title, the
+summary and every tag. If you deliberately choose a text-only model, set
+`SAWIT_VISION=false` so it is not sent images it cannot read.
 
 Structured output is requested as a strict JSON schema, with references inlined
 because that is where open models' constrained decoding tends to fall over. If a
@@ -112,22 +126,66 @@ to Claude is the calculation: getting every step, in order, with the right
 numbers. That is the field this whole app exists for, so it is worth re-checking
 a few finance reels by hand before trusting it.
 
-## Run it locally
+## Install
+
+You need **Python 3.12+**, **ffmpeg** on `PATH`, and a free API key from
+[build.nvidia.com](https://build.nvidia.com) (starts with `nvapi-`). About five
+minutes.
 
 ```bash
-cd sawit
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt          # needs ffmpeg on PATH
-cp .env.example .env                     # then fill it in
-set -a && source .env && set +a
+git clone https://github.com/prajwal2308/SAWIT.git
+cd SAWIT
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+No ffmpeg? `brew install ffmpeg` on macOS, `sudo apt install ffmpeg` on Debian
+or Ubuntu. The service checks for it and says so if it is missing.
+
+Then write a `.env`:
+
+```bash
+cp .env.example .env
+python -c "import secrets; print('SAWIT_API_KEY=' + secrets.token_urlsafe(32))"
+```
+
+Put that key in `.env`, add your `NVIDIA_API_KEY`, and set `SAWIT_LLM=nvidia`.
+Everything else has a working default — the model, the embedding model, frame
+count and transcription are all already set to values that work together, and
+the notes on each are in `.env.example` if you want to change them.
+
+```bash
 uvicorn app.main:app --reload
 ```
 
-Open `http://localhost:8000/?k=$SAWIT_API_KEY`.
+Open `http://localhost:8000/?k=<your SAWIT_API_KEY>`. That first visit trades
+the key for a cookie, so you only paste it once. Paste a reel link into the
+**Add** tab, and about a minute later you have a note.
 
-`SAWIT_API_KEY` is required — the service refuses to start without one. It
-downloads and transcribes whatever URL it is handed, so an unauthenticated
-instance is somebody else's free compute.
+`SAWIT_API_KEY` is required — the service refuses to start without one, and
+becomes the first account's key. This endpoint downloads and transcribes
+whatever URL it is handed, so an unauthenticated instance is somebody else's
+free compute.
+
+### Check it is wired up
+
+```bash
+curl -H "X-API-Key: $SAWIT_API_KEY" localhost:8000/api/status
+```
+
+That reports whether ffmpeg is present, which model and ASR backend are
+selected, whether the LLM key is set, and note counts by state. It is the
+fastest way to find the one variable you forgot.
+
+### Running the tests
+
+```bash
+pip install pytest ruff
+ruff check app tests && pytest -q
+```
+
+143 tests, no network calls, a couple of seconds. `tests/test_isolation.py` is
+the one worth reading first — it is what stands in for row-level security.
 
 ## Setting up the DM path
 
