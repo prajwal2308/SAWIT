@@ -135,7 +135,7 @@ def get_settings() -> Settings:
         ntfy_topic=os.environ.get("NTFY_TOPIC") or None,
         public_base_url=(os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/") or None,
         cookies_file=os.environ.get("YTDLP_COOKIES_FILE") or None,
-        frame_count=int(os.environ.get("SAWIT_FRAMES", "4")),
+        frame_count=int(os.environ.get("SAWIT_FRAMES", "8")),
         max_duration_seconds=int(os.environ.get("SAWIT_MAX_DURATION", "900")),
         ig_app_secret=os.environ.get("IG_APP_SECRET") or None,
         ig_verify_token=os.environ.get("IG_VERIFY_TOKEN") or None,
