@@ -232,7 +232,9 @@ def test_the_feed_shows_one_note_per_screen(client):
 
     assert "The 50/30/20 budget rule" in page
     assert "Multiply by 0.5 for needs" in page          # the steps travel with it
-    assert "scroll-snap-type:y" in page                 # the platform does the paging
+    # Sideways for cards, down for reading: two axes, two jobs, so neither
+    # gesture has to guess which one was meant.
+    assert "scroll-snap-type:x mandatory" in page
     # The still is a poster, not a player — the reel itself lives on Instagram.
     assert "https://x.test/r" in page
 

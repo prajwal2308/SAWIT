@@ -585,20 +585,10 @@ def feed(
             f"<span class=play aria-hidden=true></span>"
             f"<span class=watch>Watch on Instagram</span></a>"
             f"<div class=sheet>{head}"
-            f"<p class=lede>{esc(n['one_liner'])}</p>{facts}"
-            f"<a class=more href='#full-{note_id}'>Read more</a>"
-            f"</div></article>"
-        )
-        sheets.append(
-            f"<div class=modal id='full-{note_id}'>"
-            f"<a class=scrim href='#card-{note_id}' aria-label=Close></a>"
-            f"<div class=modal-card>"
-            f"<a class=grabber href='#card-{note_id}' aria-label=Close></a>"
-            f"<div class=modal-body>{head}"
             f"<p class=lede>{esc(n['one_liner'])}</p>{facts}{deep}"
             f"<a class=row href='/notes/{note_id}{qs}'>"
             f"<span>Open the full note</span><span class=chev>&rsaquo;</span></a>"
-            f"</div></div></div>"
+            f"</div></article>"
         )
 
     return HTMLResponse(_page(
@@ -963,9 +953,14 @@ button.quiet{{background:var(--tint-soft);color:var(--tint)}}
 /* ---- Feed: one note per screen, in the shape the reel arrived in ---- */
 body.bleed{{padding:0;overflow:hidden}}
 body.bleed .shell{{max-width:none}}
+/* Sideways for cards, down for reading. Two axes, two jobs, and neither
+   gesture has to guess which one you meant — which is what made the vertical
+   version fight your finger. */
 .feed{{
-  height:100dvh;overflow-y:auto;scroll-snap-type:y mandatory;
-  overscroll-behavior-y:contain;-webkit-overflow-scrolling:touch;scrollbar-width:none;
+  height:100dvh;display:flex;
+  overflow-x:auto;overflow-y:hidden;
+  scroll-snap-type:x mandatory;overscroll-behavior-x:contain;
+  -webkit-overflow-scrolling:touch;scrollbar-width:none;
 }}
 .feed::-webkit-scrollbar{{display:none}}
 .feed-back{{position:fixed;top:max(.5rem,env(safe-area-inset-top));left:.85rem;z-index:20;
@@ -974,7 +969,8 @@ body.bleed .shell{{max-width:none}}
 /* One card per screen, but the card grows with its note and the page does all
    the scrolling. Nesting a scroller inside a snap container was the jank. */
 .reel{{
-  height:100dvh;scroll-snap-align:start;scroll-snap-stop:always;overflow:hidden;
+  width:100vw;flex:none;height:100dvh;
+  scroll-snap-align:start;scroll-snap-stop:always;overflow:hidden;
   display:flex;flex-direction:column;gap:.9rem;
   padding:calc(3.25rem + env(safe-area-inset-top)) .9rem
           calc(2rem + env(safe-area-inset-bottom));
@@ -1013,22 +1009,13 @@ body.bleed .shell{{max-width:none}}
   border:.5px solid rgba(255,255,255,.22);
 }}
 .sheet{{
-  flex:1;min-height:0;overflow:hidden;
-  display:flex;flex-direction:column;
+  flex:1;min-height:0;
+  overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
+  scrollbar-width:none;
   padding:1.05rem 1.15rem 1.25rem;
   background:var(--surface);border:1px solid var(--line);border-radius:1rem;
 }}
-.sheet .lede{{
-  display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;
-}}
-.more{{
-  margin-top:auto;align-self:flex-start;
-  display:inline-flex;align-items:center;min-height:40px;padding:0 .95rem;
-  border-radius:999px;background:var(--tint-soft);color:var(--tint);
-  font-size:.9375rem;font-weight:600;letter-spacing:-.01em;
-  transition:transform .12s cubic-bezier(.2,.8,.3,1),filter .15s ease-out;
-}}
-.more:active{{transform:scale(.95);filter:brightness(.95)}}
+.sheet::-webkit-scrollbar{{display:none}}
 
 /* Read more, as a sheet over the card rather than more page to scroll. */
 .modal{{display:none}}
@@ -1068,7 +1055,7 @@ body.bleed .shell{{max-width:none}}
 @media(min-width:820px){{
   .reel{{
     flex-direction:row;align-items:center;gap:1.5rem;
-    max-width:62rem;margin:0 auto;padding:1.5rem 2rem;
+    padding:1.5rem clamp(2rem,8vw,7rem);
   }}
   .stage{{height:min(74dvh,620px);max-height:none;flex:none;
     aspect-ratio:9/16;border-radius:1.1rem;
