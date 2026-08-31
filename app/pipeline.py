@@ -54,7 +54,9 @@ def process(note_id: str, source: Source, settings: Settings, store: Store) -> N
                     max_duration_seconds=settings.max_duration_seconds,
                 )
 
-            text = ""
+            # An image post's caption stands in for the transcript: it is the
+            # only text the post has, and on carousels it is the whole point.
+            text = item.caption or ""
             if item.audio_path is not None:
                 text = transcribe.transcribe(
                     item.audio_path,

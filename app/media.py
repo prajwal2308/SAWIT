@@ -37,14 +37,66 @@ class Media:
     description: str | None = None
     uploader: str | None = None
     duration: float | None = None
+    # An image post has no audio and no frames we can reach, but its caption is
+    # usually the content. Set only on that path; None means there was a video.
+    caption: str | None = None
+    slides: int | None = None
 
 
 def fetch(url: str, workdir: Path, *, cookies_file: str | None, frame_count: int,
           max_duration_seconds: int) -> Media:
     """Scrape a reel page URL. The fragile path — see the module docstring."""
     _require_ffmpeg()
-    info, video_path = _download(url, workdir, cookies_file)
+    try:
+        info, video_path = _download(url, workdir, cookies_file)
+    except MediaError:
+        # Not every saved post is a video. An image carousel has no video
+        # stream at all, and on those the caption is usually where the content
+        # actually lives — a ten-slide travel guide is written out in it.
+        caption = _caption_only(url, cookies_file)
+        if caption is None:
+            raise
+        return caption
     return _render(video_path, workdir, info, frame_count, max_duration_seconds)
+
+
+def _caption_only(url: str, cookies_file: str | None) -> Media | None:
+    """Everything a post carries when it carries no video.
+
+    Returns None when there is no usable text either, so the original download
+    error is what the reader sees rather than a vaguer second one.
+    """
+    try:
+        from yt_dlp import YoutubeDL
+    except ImportError:  # pragma: no cover - dependency is declared
+        return None
+    opts: dict = {"quiet": True, "no_warnings": True, "noprogress": True,
+                  "ignoreerrors": True, "extract_flat": True, "skip_download": True}
+    if cookies_file:
+        opts["cookiefile"] = cookies_file
+    try:
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception:
+        return None
+    if not info:
+        return None
+
+    caption = (info.get("description") or "").strip()
+    if len(caption) < 40:
+        # Too little to write a note from; the extraction would invent one.
+        return None
+    slides = info.get("playlist_count") or len(info.get("entries") or [])
+    return Media(
+        audio_path=None,
+        frames=[],
+        caption=caption,
+        title=info.get("title"),
+        description=caption,
+        uploader=info.get("uploader") or info.get("channel"),
+        duration=None,
+        slides=slides or None,
+    )
 
 
 def fetch_direct(media_url: str, workdir: Path, *, frame_count: int,

@@ -114,3 +114,30 @@ def test_nothing_configured_means_nothing_is_delivered(settings, spy):
     _deliver("abc123", Source(page_url="https://x.test/r"), make_note(), settings)
 
     assert spy["dm"] == [] and spy["push"] == []
+
+
+def test_an_image_post_is_written_from_its_caption(settings, spy, tmp_path, monkeypatch):
+    """Not every saved post is a video. A carousel has no video stream at all,
+    and its caption is where the content actually lives."""
+    from app import pipeline
+    from app.media import Media
+    from app.store import Store
+
+    store = Store(str(tmp_path / "notes.sqlite3"))
+    note_id = store.create_pending("https://x.test/p")
+    seen: dict = {}
+    caption = ("Only got one day in Acadia? Do this. This route hits the highlights "
+               "without feeling rushed, from coastal cliffs to mountain overlooks.")
+
+    monkeypatch.setattr(pipeline.media_mod, "fetch", lambda *a, **k: Media(
+        audio_path=None, frames=[], caption=caption, title="Post by shakaguide",
+        uploader="shakaguide", slides=10))
+    monkeypatch.setattr(pipeline.transcribe, "transcribe", lambda *a, **k: pytest.fail(
+        "there is no audio on an image post"))
+    monkeypatch.setattr(pipeline.extract_mod, "extract",
+                        lambda **kw: seen.update(kw) or make_note())
+
+    pipeline.process(note_id, Source(page_url="https://x.test/p"), settings, store)
+
+    assert seen["transcript"] == caption
+    assert store.get(note_id)["status"] == "ready"
