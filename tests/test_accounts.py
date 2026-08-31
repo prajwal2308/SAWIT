@@ -235,3 +235,20 @@ def test_the_welcome_page_carries_your_key_and_the_installer(web, settings):
     assert link in page
     assert key in page, "the key has to be on the page they are told to paste it from"
     assert "Add to Home Screen" in page
+
+
+def test_a_shortcut_url_that_is_not_a_url_is_ignored(monkeypatch):
+    """Turning the installer off by typing something in the box must not leave
+    a broken link on the page every new account sees."""
+    from app.config import get_settings
+
+    for junk in ("", "   ", "disabled", "none", "PASTE-A-LINK"):
+        monkeypatch.setenv("SAWIT_API_KEY", "k" * 20)
+        monkeypatch.setenv("SAWIT_SHORTCUT_URL", junk)
+        get_settings.cache_clear()
+        assert get_settings().shortcut_url is None, junk
+
+    monkeypatch.setenv("SAWIT_SHORTCUT_URL", "https://www.icloud.com/shortcuts/abc")
+    get_settings.cache_clear()
+    assert get_settings().shortcut_url == "https://www.icloud.com/shortcuts/abc"
+    get_settings.cache_clear()

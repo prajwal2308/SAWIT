@@ -9,6 +9,14 @@ from functools import lru_cache
 from dotenv import load_dotenv
 
 
+def _url_or_none(raw: str | None) -> str | None:
+    """Only a real link. Anything else — blank, a placeholder, someone typing
+    "disabled" to turn it off — becomes None rather than a broken href, and the
+    page that would have shown it falls back to the manual instructions."""
+    value = (raw or "").strip()
+    return value if value.startswith(("http://", "https://")) else None
+
+
 def _flag(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None:
@@ -114,7 +122,7 @@ def get_settings() -> Settings:
         ).rstrip("/"),
         vision=_flag("SAWIT_VISION", default=True),
         embed_model=os.environ.get("SAWIT_EMBED_MODEL", DEFAULT_EMBED_MODEL).strip(),
-        shortcut_url=(os.environ.get("SAWIT_SHORTCUT_URL") or "").strip() or None,
+        shortcut_url=_url_or_none(os.environ.get("SAWIT_SHORTCUT_URL")),
         asr_backend=os.environ.get("SAWIT_ASR", "faster-whisper"),
         whisper_model=os.environ.get("SAWIT_WHISPER_MODEL", "small"),
         asr_model=os.environ.get("ASR_MODEL", "whisper-1"),
