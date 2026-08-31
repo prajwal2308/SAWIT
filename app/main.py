@@ -347,7 +347,7 @@ def personal_shortcut(
     data = shortcut_mod.build(f"{base}/ingest", user["api_key"])
     return Response(
         data,
-        media_type="application/x-plist",
+        media_type="application/octet-stream",
         headers={
             "Content-Disposition": 'attachment; filename="Sawit.shortcut"',
             "Cache-Control": "no-store",
@@ -370,13 +370,15 @@ def welcome(
     base = settings.public_base_url or ""
     mine = f"{base}/shortcut/{user['api_key']}.shortcut"
     generated = (
-        f"<a class='row primary' href='shortcuts://import-shortcut?"
-        f"url={quote_plus(mine)}&name=Sawit'>"
-        f"<span>Install my shortcut</span><span class=chev>&rsaquo;</span></a>"
-        "<p class=lede>Built for your account, with your key already in it &mdash; "
-        "nothing to paste. iOS only imports a shortcut it did not sign once "
-        "<b>Settings &rarr; Shortcuts &rarr; Allow Untrusted Shortcuts</b> is on, "
-        "which is one switch, once.</p>"
+        f"<a class='row primary' href='{html.escape(mine, quote=True)}'>"
+        f"<span>Download my shortcut</span><span class=chev>&rsaquo;</span></a>"
+        "<p class=lede>Built for your account with your key already in it &mdash; "
+        "nothing to paste. Safari saves it, then tap it in <b>Downloads</b> "
+        "(the arrow beside the address bar) to add it.</p>"
+        "<p class=lede>It needs <b>Settings &rarr; Shortcuts &rarr; Allow Untrusted "
+        "Shortcuts</b> switched on first &mdash; one switch, once. "
+        f"<a href='shortcuts://import-shortcut?url={quote_plus(mine)}&name=Sawit'>"
+        "Or try importing it directly</a>.</p>"
     ) if base else ""
     shared = (
         f"<a class='row' href='{html.escape(settings.shortcut_url, quote=True)}'>"

@@ -292,6 +292,8 @@ def test_welcome_offers_the_generated_shortcut_before_the_shared_one(web, settin
     # Secure, and TestClient speaks http.
     page = web.get("/welcome", headers={"X-API-Key": API_KEY}).text
 
-    assert "Install my shortcut" in page
+    assert "Download my shortcut" in page
+    # Both routes are offered: iOS rejects the custom scheme on some versions,
+    # and a plain download is the one that always works.
     assert "shortcuts://import-shortcut" in page
-    assert page.index("Install my shortcut") < page.index("Or install the shared one")
+    assert page.index("Download my shortcut") < page.index("Or install the shared one")
