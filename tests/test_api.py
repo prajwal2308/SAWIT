@@ -78,6 +78,35 @@ def test_text_with_no_url_is_rejected(client):
     assert response.status_code == 422
 
 
+def test_pasting_a_link_into_the_page_queues_it(client):
+    client.get("/", params={"k": API_KEY})
+
+    response = client.post(
+        "/add",
+        data={"url": "https://www.instagram.com/reel/ABC/"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert len(client.started) == 1
+    note_id, source = client.started[0]
+    assert source.page_url == "https://www.instagram.com/reel/ABC/"
+    # Straight to the note, so you watch it work rather than hunting the list.
+    assert response.headers["location"] == f"/notes/{note_id}"
+
+
+def test_the_paste_box_needs_a_real_link(client):
+    client.get("/", params={"k": API_KEY})
+    response = client.post("/add", data={"url": "not a link"})
+    assert response.status_code == 400
+    assert client.started == []
+
+
+def test_the_paste_box_needs_the_key(client):
+    assert client.post("/add", data={"url": "https://example.com/r/1"}).status_code == 401
+    assert client.started == []
+
+
 def test_a_browser_visit_trades_the_key_for_a_cookie(client):
     assert client.get("/", params={"k": API_KEY}).status_code == 200
     assert client.cookies.get(KEY_COOKIE) == API_KEY

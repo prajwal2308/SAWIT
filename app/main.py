@@ -12,9 +12,18 @@ from functools import lru_cache
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationError, field_validator
 
 from . import instagram
 from .config import Settings, get_settings
@@ -155,6 +164,26 @@ def ingest(
     note_id = store.create_pending(payload.url)
     background.add_task(process, note_id, Source(page_url=payload.url), settings, store)
     return JSONResponse({"id": note_id, "status": "pending"}, status_code=202)
+
+
+@app.post("/add", dependencies=[Depends(require_key)])
+def add_from_page(
+    request: Request,
+    background: BackgroundTasks,
+    url: str = Form(...),
+    k: str | None = None,
+    settings: Settings = Depends(get_settings),
+    store: Store = Depends(get_store),
+) -> Response:
+    """Paste a link straight into the page — no Shortcut, no phone, no Meta app."""
+    try:
+        url = IngestRequest(url=url).url
+    except ValidationError:
+        raise HTTPException(status_code=400, detail="That is not a link.") from None
+    note_id = store.create_pending(url)
+    background.add_task(process, note_id, Source(page_url=url), settings, store)
+    return _redirect_or_json(request, k, f"/notes/{note_id}",
+                             {"id": note_id, "status": "pending"})
 
 
 @app.get("/webhook/instagram", response_class=PlainTextResponse)
@@ -333,7 +362,13 @@ def index(
     # value still puts a bare `k=` on every search you run.
     key_field = f'<input type=hidden name=k value="{key}">' if key else ""
     return HTMLResponse(_page(
-        f"""<form method=get>
+        f"""<form method=post action="/add{html.escape(_qs(k=link_key), quote=True)}"
+                  class=add>
+              <input name=url type=url required
+                     placeholder="Paste a reel link to save it" autocomplete=off>
+              <button>Save</button>
+            </form>
+            <form method=get>
               {key_field}
               <input type=hidden name=category value="{html.escape(category or '', quote=True)}">
               <input name=q value="{html.escape(q or '', quote=True)}"
@@ -476,6 +511,10 @@ font-size:.85rem;text-decoration:none;white-space:nowrap}}
 .chip span{{color:var(--dim)}}
 .chip.on{{background:var(--fg);color:var(--bg);border-color:var(--fg)}}
 .chip.on span{{color:var(--bg);opacity:.7}}
+.add{{display:flex;gap:.5rem;align-items:flex-start}}
+.add button{{flex:none;height:2.85rem;padding:0 1.1rem;font-size:1rem;
+border:1px solid var(--line);border-radius:.6rem;background:transparent;
+color:var(--fg);cursor:pointer}}
 details{{margin-top:1.5rem;color:var(--dim)}}
 .actions{{display:flex;gap:.5rem;margin:2rem 0 1rem}}
 .actions button{{padding:.5rem .9rem;font-size:.9rem;border:1px solid var(--line);
