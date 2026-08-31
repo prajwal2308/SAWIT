@@ -359,7 +359,9 @@ def index(
     ) if ready else ""
 
     if notes:
-        rows = "\n".join(_card(note, key) for note in notes)
+        rows = ("<div class=grid>"
+                + "\n".join(_card(note, key) for note in notes)
+                + "</div>")
     elif category:
         rows = f"<p class=empty>Nothing in {html.escape(category)} yet.</p>"
     else:
@@ -437,7 +439,11 @@ def feed(
     cards = []
     for n in notes:
         note_id = esc(n["id"])
-        thumb = (f"<img src='/notes/{note_id}/thumb.jpg{qs}' alt='' loading=lazy>"
+        src = f"/notes/{note_id}/thumb.jpg{qs}"
+        # The poster is portrait; a wide viewport must letterbox it against a
+        # blurred copy of itself rather than cropping into somebody's face.
+        thumb = (f"<img class=blur src='{src}' alt='' aria-hidden=true loading=lazy>"
+                 f"<img class=poster src='{src}' alt='' loading=lazy>"
                  if n["has_thumbnail"] else "")
 
         def bullets(items: list, render) -> str:
@@ -461,8 +467,11 @@ def feed(
         cards.append(
             f"<article class=reel>"
             f"<a class=stage href='{esc(n['url'])}' target=_blank rel=noopener>"
-            f"{thumb}<span class=play aria-hidden=true></span>"
-            f"<span class=stage-hint>Watch on Instagram</span></a>"
+            f"{thumb}"
+            f"<span class=play aria-hidden=true></span>"
+            f"<span class=caption>"
+            f"<span class=caption-title>{esc(n['title'])}</span>"
+            f"<span class=caption-hint>Watch on Instagram &rsaquo;</span></span></a>"
             f"<div class=sheet>{body}"
             f"<a class=full href='/notes/{note_id}{qs}'>Open the full note &rsaquo;</a>"
             f"</div></article>"
@@ -561,15 +570,16 @@ def _card(note: dict[str, Any], key: str) -> str:
         # rather than having to be read.
         pill = (f"<span class='pill {'failed' if failed else 'pending'}'>"
                 f"<span class=dot></span>{'Failed' if failed else 'Working'}</span>")
-        return (f"<a class=card href='/notes/{note_id}{qs}'>"
-                f"<div>{pill}"
-                f"<p class=lede>{esc(note.get('error') or note['url'])}</p></div></a>")
+        return (f"<a class='tile bare' href='/notes/{note_id}{qs}'>"
+                f"<span class=bare-in>{pill}"
+                f"<span class=bare-msg>{esc(note.get('error') or note['url'])}</span>"
+                f"</span></a>")
     thumb = (f"<img src='/notes/{note_id}/thumb.jpg{qs}' alt='' loading=lazy>"
-             if note["has_thumbnail"] else "")
-    return (f"<a class=card href='/notes/{note_id}{qs}'>{thumb}"
-            f"<div><p class=meta>{esc(note['category'])}</p>"
-            f"<h3>{esc(note['title'])}</h3>"
-            f"<p class=lede>{esc(note['one_liner'])}</p></div></a>")
+             if note["has_thumbnail"] else "<span class=noshot></span>")
+    return (f"<a class=tile href='/notes/{note_id}{qs}'>{thumb}"
+            f"<span class=tile-text>"
+            f"<span class=tile-cat>{esc(note['category'])}</span>"
+            f"<span class=tile-title>{esc(note['title'])}</span></span></a>")
 
 
 def _page(body: str, full_bleed: bool = False) -> str:
@@ -684,16 +694,36 @@ button:active{{transform:scale(.97);background:var(--press)}}
 }}
 .browse:active{{transform:scale(.985);background:var(--press)}}
 .browse .chev{{color:var(--faint);font-size:1.25rem}}
-.card{{
-  display:flex;gap:.85rem;align-items:flex-start;
-  padding:.85rem;margin:0 -.85rem;border-radius:.9rem;
-  transition:transform .1s ease-out,background-color .15s ease-out;
+/* A grid of stills, the way the reels were saved in the first place. */
+.grid{{display:grid;gap:.5rem;margin-top:.85rem;
+  grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}}
+@media(min-width:560px){{.grid{{gap:.65rem;
+  grid-template-columns:repeat(auto-fill,minmax(190px,1fr))}}}}
+.tile{{
+  position:relative;display:block;aspect-ratio:9/14;overflow:hidden;
+  border-radius:.85rem;background:var(--surface);border:1px solid var(--line);
+  transition:transform .1s ease-out;
 }}
-.card + .card{{box-shadow:0 -1px 0 var(--line)}}
-.card:active{{transform:scale(.985);background:var(--press)}}
-.card img{{width:66px;height:88px;object-fit:cover;border-radius:.6rem;flex:none;
-  background:var(--press)}}
-.card > div{{min-width:0;flex:1}}
+.tile:active{{transform:scale(.975)}}
+.tile img{{width:100%;height:100%;object-fit:cover;display:block}}
+.noshot{{position:absolute;inset:0;
+  background:linear-gradient(150deg,var(--press),transparent)}}
+.tile-text{{
+  position:absolute;left:0;right:0;bottom:0;
+  display:flex;flex-direction:column;gap:.15rem;padding:2.4rem .6rem .6rem;
+  background:linear-gradient(transparent,rgba(0,0,0,.8));
+}}
+.tile-cat{{color:rgba(255,255,255,.7);font-size:.625rem;font-weight:660;
+  letter-spacing:.08em;text-transform:uppercase}}
+.tile-title{{color:#fff;font-size:.875rem;line-height:1.25;letter-spacing:-.012em;
+  font-weight:620;text-shadow:0 1px 4px rgba(0,0,0,.5);
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}}
+/* A note with no still yet: state first, then whatever we know. */
+.tile.bare{{background:var(--surface)}}
+.bare-in{{position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:flex-start;justify-content:flex-end;gap:.4rem;padding:.7rem}}
+.bare-msg{{color:var(--dim);font-size:.8125rem;line-height:1.35;
+  display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}}
 .meta{{color:var(--faint);font-size:.75rem;font-weight:600;text-transform:uppercase;
   letter-spacing:.055em;margin:0 0 .12rem}}
 .lede{{margin:.18rem 0 0;color:var(--dim);font-size:.9375rem;line-height:1.42}}
@@ -738,31 +768,57 @@ body.bleed .shell{{max-width:none}}
   background:rgba(0,0,0,.42);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}}
 .reel{{
   height:100dvh;scroll-snap-align:start;scroll-snap-stop:always;
-  display:grid;grid-template-rows:minmax(0,52fr) minmax(0,48fr);
+  display:grid;grid-template-rows:minmax(0,1fr) auto;
 }}
-.stage{{position:relative;overflow:hidden;background:#000;display:block}}
-.stage img{{width:100%;height:100%;object-fit:cover;display:block}}
-/* The still is a poster, so say so rather than implying it will play here. */
-.stage::after{{content:"";position:absolute;inset:auto 0 0;height:45%;
-  background:linear-gradient(transparent,rgba(0,0,0,.55));pointer-events:none}}
+/* The poster sits in its own aspect box, letterboxed against a blurred copy —
+   the alternative on a wide screen is a cropped close-up of somebody's chin. */
+.stage{{position:relative;overflow:hidden;background:#000;display:grid;place-items:center}}
+.stage .blur{{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+  filter:blur(34px) saturate(140%) brightness(.42);transform:scale(1.2)}}
+.stage .poster{{position:relative;max-width:100%;max-height:100%;
+  aspect-ratio:9/16;object-fit:cover;display:block}}
 .play{{
   position:absolute;top:50%;left:50%;width:62px;height:62px;margin:-31px 0 0 -31px;
   border-radius:50%;background:rgba(255,255,255,.16);
   -webkit-backdrop-filter:blur(16px) saturate(180%);backdrop-filter:blur(16px) saturate(180%);
-  border:1px solid rgba(255,255,255,.3);
+  border:1px solid rgba(255,255,255,.3);z-index:2;
   transition:transform .1s ease-out,background-color .15s ease-out;
 }}
 .play::before{{content:"";position:absolute;top:50%;left:54%;transform:translate(-50%,-50%);
   border-style:solid;border-width:9px 0 9px 15px;
   border-color:transparent transparent transparent #fff}}
 .stage:active .play{{transform:scale(.92);background:rgba(255,255,255,.28)}}
-.stage-hint{{position:absolute;left:0;right:0;bottom:.85rem;text-align:center;
-  color:rgba(255,255,255,.92);font-size:.8125rem;font-weight:590;letter-spacing:-.005em;
-  text-shadow:0 1px 3px rgba(0,0,0,.5)}}
+.caption{{
+  position:absolute;left:0;right:0;bottom:0;z-index:2;
+  display:flex;flex-direction:column;gap:.2rem;
+  padding:3rem 1.15rem 1rem;
+  background:linear-gradient(transparent,rgba(0,0,0,.72));
+}}
+.caption-title{{color:#fff;font-size:1.0625rem;line-height:1.25;letter-spacing:-.016em;
+  font-weight:640;text-shadow:0 1px 6px rgba(0,0,0,.55);
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}}
+.caption-hint{{color:rgba(255,255,255,.72);font-size:.8125rem;font-weight:560;
+  letter-spacing:-.004em}}
 .sheet{{
   overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
-  padding:1rem 1.15rem calc(1.5rem + env(safe-area-inset-bottom));
+  padding:.95rem 1.15rem calc(1.25rem + env(safe-area-inset-bottom));
   background:var(--bg);scrollbar-width:none;
+  max-height:46dvh;
+  box-shadow:0 -1px 0 var(--line);
+}}
+/* Desktop: stop stacking. The reel keeps its portrait shape beside the note
+   instead of stretching a phone layout across a monitor. */
+@media(min-width:820px){{
+  .reel{{grid-template-rows:none;grid-template-columns:minmax(0,1fr) minmax(340px,30rem)}}
+  .stage{{height:100dvh}}
+  .stage .poster{{max-height:88dvh;border-radius:14px;
+    box-shadow:0 24px 70px rgba(0,0,0,.55)}}
+  .caption{{left:50%;transform:translateX(-50%);width:min(100%,49.5dvh);
+    border-radius:0 0 14px 14px;padding:3rem 1rem .9rem;bottom:6dvh}}
+  .sheet{{max-height:none;height:100dvh;padding:2.5rem 2rem;
+    box-shadow:-1px 0 0 var(--line);display:flex;flex-direction:column;justify-content:center}}
+  .sheet > *{{max-width:34rem}}
+  .feed-title{{font-size:1.5rem;letter-spacing:-.022em}}
 }}
 .sheet::-webkit-scrollbar{{display:none}}
 .feed-title{{font-size:1.3125rem;line-height:1.2;letter-spacing:-.021em;font-weight:700;
@@ -783,7 +839,8 @@ body.bleed .shell{{max-width:none}}
 @media(prefers-reduced-motion:reduce){{
   *,*::before,*::after{{animation-duration:.01ms !important;animation-iteration-count:1 !important;
     transition-duration:.01ms !important}}
-  button:active,.card:active,.chip:active,.stage:active .play{{transform:none}}
+  button:active,.tile:active,.chip:active,.browse:active,
+  .stage:active .play{{transform:none}}
   .feed{{scroll-behavior:auto}}
 }}
 @media(prefers-reduced-transparency:reduce){{
