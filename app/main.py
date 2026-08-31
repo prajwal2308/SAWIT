@@ -275,10 +275,13 @@ def api_notes(
     q: str | None = None,
     category: str | None = None,
     limit: int = 50,
+    settings: Settings = Depends(get_settings),
     store: Store = Depends(get_store),
 ) -> list[dict[str, Any]]:
     if q:
-        return store.search(q, limit, category=category)
+        # The same hybrid the page uses; a JSON caller should not get worse
+        # results than the browser for the same query.
+        return _hybrid(q, category, settings, store)[:limit]
     return store.recent(limit, category=category)
 
 
@@ -540,7 +543,8 @@ def feed(
             "<p class=empty>Nothing to flick through yet.</p>"
         ))
 
-    cards = []
+    cards: list[str] = []
+    sheets: list[str] = []
     for n in notes:
         note_id = esc(n["id"])
         src = f"/notes/{note_id}/thumb.jpg{qs}"
@@ -553,38 +557,54 @@ def feed(
         def bullets(items: list, render) -> str:
             return "".join(render(i) for i in items) if items else ""
 
-        body = "".join([
-            f"<p class=meta>{esc(n['category'])}"
-            + (f" &middot; {esc(n['uploader'])}" if n.get("uploader") else "") + "</p>",
-            f"<h2 class=feed-title>{esc(n['title'])}</h2>",
-            f"<p class=lede>{esc(n['one_liner'])}</p>" if n.get("one_liner") else "",
+        facts = ("<div class=facts>" + bullets(
+            n["key_facts"],
+            lambda f: f"<div class=fact><dt>{esc(f['label'])}</dt>"
+                      f"<dd>{esc(f['value'])}</dd></div>",
+        ) + "</div>") if n["key_facts"] else ""
+        head = (f"<p class=meta>{esc(n['category'])}"
+                + (f" &middot; {esc(n['uploader'])}" if n.get("uploader") else "") + "</p>"
+                f"<h2 class=feed-title>{esc(n['title'])}</h2>")
+        deep = "".join([
             f"<ul class=takeaways>{bullets(n['takeaways'], lambda t: f'<li>{esc(t)}</li>')}</ul>"
             if n["takeaways"] else "",
             f"<ol class=steps>{bullets(n['steps'], lambda s: f'<li>{esc(s)}</li>')}</ol>"
             if n["steps"] else "",
-            "<div class=facts>" + bullets(
-                n["key_facts"],
-                lambda f: f"<div class=fact><dt>{esc(f['label'])}</dt>"
-                          f"<dd>{esc(f['value'])}</dd></div>",
-            ) + "</div>" if n["key_facts"] else "",
+            f"<h3 class=sub>Worth knowing</h3>"
+            f"<ul class=takeaways>{bullets(n['caveats'], lambda c: f'<li>{esc(c)}</li>')}</ul>"
+            if n["caveats"] else "",
         ])
+        # The card is exactly one screen and never scrolls. Whatever does not fit
+        # is one tap away, rather than turning the feed into a long document.
         cards.append(
-            f"<article class=reel>"
+            f"<article class=reel id='card-{note_id}'>"
             # The title already leads the sheet below; painting it over the still
             # as well collided with the reel's own on-screen text.
             f"<a class=stage href='{esc(n['url'])}' target=_blank rel=noopener>"
             f"{thumb}"
             f"<span class=play aria-hidden=true></span>"
             f"<span class=watch>Watch on Instagram</span></a>"
-            f"<div class=sheet>{body}"
-            f"<a class=full href='/notes/{note_id}{qs}'>Open the full note &rsaquo;</a>"
+            f"<div class=sheet>{head}"
+            f"<p class=lede>{esc(n['one_liner'])}</p>{facts}"
+            f"<a class=more href='#full-{note_id}'>Read more</a>"
             f"</div></article>"
+        )
+        sheets.append(
+            f"<div class=modal id='full-{note_id}'>"
+            f"<a class=scrim href='#card-{note_id}' aria-label=Close></a>"
+            f"<div class=modal-card>"
+            f"<a class=grabber href='#card-{note_id}' aria-label=Close></a>"
+            f"<div class=modal-body>{head}"
+            f"<p class=lede>{esc(n['one_liner'])}</p>{facts}{deep}"
+            f"<a class=row href='/notes/{note_id}{qs}'>"
+            f"<span>Open the full note</span><span class=chev>&rsaquo;</span></a>"
+            f"</div></div></div>"
         )
 
     return HTMLResponse(_page(
         f"<div class=feed>"
         f"<a class='back feed-back' href='/{_qs(k=link_key)}'>&lsaquo; All notes</a>"
-        + "".join(cards) + "</div>",
+        + "".join(cards) + "</div>" + "".join(sheets),
         full_bleed=True,
     ))
 
@@ -944,7 +964,7 @@ button.quiet{{background:var(--tint-soft);color:var(--tint)}}
 body.bleed{{padding:0;overflow:hidden}}
 body.bleed .shell{{max-width:none}}
 .feed{{
-  height:100dvh;overflow-y:auto;scroll-snap-type:y proximity;
+  height:100dvh;overflow-y:auto;scroll-snap-type:y mandatory;
   overscroll-behavior-y:contain;-webkit-overflow-scrolling:touch;scrollbar-width:none;
 }}
 .feed::-webkit-scrollbar{{display:none}}
@@ -954,7 +974,7 @@ body.bleed .shell{{max-width:none}}
 /* One card per screen, but the card grows with its note and the page does all
    the scrolling. Nesting a scroller inside a snap container was the jank. */
 .reel{{
-  min-height:100dvh;scroll-snap-align:start;
+  height:100dvh;scroll-snap-align:start;scroll-snap-stop:always;overflow:hidden;
   display:flex;flex-direction:column;gap:.9rem;
   padding:calc(3.25rem + env(safe-area-inset-top)) .9rem
           calc(2rem + env(safe-area-inset-bottom));
@@ -993,8 +1013,55 @@ body.bleed .shell{{max-width:none}}
   border:.5px solid rgba(255,255,255,.22);
 }}
 .sheet{{
-  flex:1;padding:1.05rem 1.15rem 1.25rem;
+  flex:1;min-height:0;overflow:hidden;
+  display:flex;flex-direction:column;
+  padding:1.05rem 1.15rem 1.25rem;
   background:var(--surface);border:1px solid var(--line);border-radius:1rem;
+}}
+.sheet .lede{{
+  display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;
+}}
+.more{{
+  margin-top:auto;align-self:flex-start;
+  display:inline-flex;align-items:center;min-height:40px;padding:0 .95rem;
+  border-radius:999px;background:var(--tint-soft);color:var(--tint);
+  font-size:.9375rem;font-weight:600;letter-spacing:-.01em;
+  transition:transform .12s cubic-bezier(.2,.8,.3,1),filter .15s ease-out;
+}}
+.more:active{{transform:scale(.95);filter:brightness(.95)}}
+
+/* Read more, as a sheet over the card rather than more page to scroll. */
+.modal{{display:none}}
+.modal:target{{
+  display:block;position:fixed;inset:0;z-index:40;
+}}
+.scrim{{position:absolute;inset:0;background:rgba(0,0,0,.45);
+  -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}}
+.modal-card{{
+  position:absolute;left:0;right:0;bottom:0;max-height:88dvh;
+  display:flex;flex-direction:column;
+  background:var(--bg);border-radius:1.15rem 1.15rem 0 0;
+  box-shadow:0 -8px 40px rgba(0,0,0,.35);
+  animation:rise .34s cubic-bezier(.2,.9,.3,1);
+}}
+@keyframes rise{{from{{transform:translateY(14%);opacity:.6}}to{{transform:none;opacity:1}}}}
+.grabber{{
+  display:block;flex:none;height:26px;position:relative;
+}}
+.grabber::before{{content:"";position:absolute;top:9px;left:50%;margin-left:-18px;
+  width:36px;height:5px;border-radius:3px;background:var(--rule-2,var(--line-strong))}}
+.modal-body{{
+  overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;
+  padding:.35rem 1.15rem calc(1.5rem + env(safe-area-inset-bottom));
+}}
+.sub{{font-size:.75rem;font-weight:660;letter-spacing:.055em;text-transform:uppercase;
+  color:var(--faint);margin:1.4rem 0 .3rem}}
+@media(min-width:820px){{
+  .modal-card{{left:50%;right:auto;bottom:auto;top:50%;
+    transform:translate(-50%,-50%);width:min(38rem,92vw);
+    border-radius:1.15rem;max-height:82dvh}}
+  @keyframes rise{{from{{transform:translate(-50%,-46%);opacity:.6}}
+    to{{transform:translate(-50%,-50%);opacity:1}}}}
 }}
 /* Desktop: stop stacking. The reel keeps its portrait shape beside the note
    instead of stretching a phone layout across a monitor. */
