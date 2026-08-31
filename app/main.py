@@ -311,7 +311,9 @@ def signup(
                                 accounts.new_api_key())
     if user_id is None:
         return _redirect("/signup?error=That+email+is+already+registered.")
-    return _with_session(_redirect("/"), user_id, settings)
+    # A new account has no notes, so an empty list is a dead end. Send them to
+    # the thing that makes the app do something instead.
+    return _with_session(_redirect("/welcome"), user_id, settings)
 
 
 @app.post("/logout")
@@ -321,6 +323,64 @@ def logout() -> Response:
     response.delete_cookie(SESSION_COOKIE)
     response.delete_cookie(KEY_COOKIE)
     return response
+
+
+@app.get("/welcome", response_class=HTMLResponse, dependencies=[Depends(require_key)])
+def welcome(
+    user: dict[str, Any] = Depends(current_user),
+    settings: Settings = Depends(get_settings),
+) -> HTMLResponse:
+    """What to do in the two minutes after signing up.
+
+    Three steps, in the order they have to happen, with the key already on the
+    page. The alternative — an empty note list and a link to some docs — is
+    where people close the tab.
+    """
+    key = html.escape(user["api_key"], quote=True)
+    install = (
+        f"<a class='row primary' href='{html.escape(settings.shortcut_url, quote=True)}'>"
+        f"<span>Add the Sawit shortcut</span><span class=chev>&rsaquo;</span></a>"
+        if settings.shortcut_url else
+        "<p class=lede>This deployment has no one-tap installer yet. Build the "
+        "shortcut once by hand — the recipe is on your Account page — then set "
+        "<code>SAWIT_SHORTCUT_URL</code> to its iCloud link so nobody has to "
+        "do it again.</p>"
+    )
+    return HTMLResponse(_page(
+        "<div class=welcome>"
+        "<h1>You're in.</h1>"
+        "<p class=tag>Two minutes, and you never set it up again.</p>"
+
+        "<div class=step><span class=n>1</span><div>"
+        "<h2>Keep Sawit on your home screen</h2>"
+        "<p class=lede>In Safari: <b>Share</b> \u2192 <b>Add to Home Screen</b>. "
+        "It opens straight to your notes and stays signed in.</p>"
+        "</div></div>"
+
+        "<div class=step><span class=n>2</span><div>"
+        "<h2>Put Sawit in the share sheet</h2>"
+        f"{install}"
+        "</div></div>"
+
+        "<div class=step><span class=n>3</span><div>"
+        "<h2>Give the shortcut your key</h2>"
+        "<p class=lede>Open the shortcut once and paste this into its "
+        "<code>X-API-Key</code> header. It is the only thing that is yours "
+        "alone \u2014 a shortcut everyone installs cannot carry it.</p>"
+        f"<button class=copy type=button data-key=\"{key}\">Copy my key</button>"
+        f"<pre class=keybox>{key}</pre>"
+        "</div></div>"
+
+        "<a class='row primary' href='/'>"
+        "<span>Done \u2014 go to my notes</span><span class=chev>&rsaquo;</span></a>"
+        "<p class=swap>You can find all of this again under <a href='/account'>Account</a>.</p>"
+        "</div>"
+        "<script>document.querySelectorAll('.copy').forEach(function(b){"
+        "b.addEventListener('click',function(){"
+        "navigator.clipboard.writeText(b.dataset.key).then(function(){"
+        "var t=b.textContent;b.textContent='Copied';"
+        "setTimeout(function(){b.textContent=t},1400)})})});</script>"
+    ))
 
 
 @app.get("/account", response_class=HTMLResponse, dependencies=[Depends(require_key)])
@@ -379,7 +439,7 @@ def _setup_help(settings: Settings, api_key: str) -> str:
     if settings.shortcut_url:
         install = (
             f"<a class=row href='{html.escape(settings.shortcut_url, quote=True)}'>"
-            f"<span>Add the Save Reel shortcut</span><span class=chev>&rsaquo;</span></a>"
+            f"<span>Add the Sawit shortcut</span><span class=chev>&rsaquo;</span></a>"
             "<p class=lede>Two taps: <b>Add Shortcut</b>, then open it once and put "
             "your key in the <code>X-API-Key</code> header — it arrives with a "
             "placeholder, because a shortcut anyone can install cannot carry "
@@ -398,7 +458,7 @@ def _setup_help(settings: Settings, api_key: str) -> str:
         + install
         + "<details class=row-d><summary><span>Or build it by hand</span>"
         "<span class=chev>&rsaquo;</span></summary><p>"
-        "In <b>Shortcuts</b>: a new shortcut called <i>Save Reel</i> with one "
+        "In <b>Shortcuts</b>: a new shortcut called <i>Sawit</i> with one "
         "<b>Get Contents of URL</b> action. Method <b>POST</b>. Headers "
         f"<code>X-API-Key: {key}</code> and <code>Content-Type: application/json</code>. "
         "Request body <b>JSON</b>, one Text field named <code>url</code>, and its "
@@ -407,7 +467,7 @@ def _setup_help(settings: Settings, api_key: str) -> str:
         "<b>Text</b> only, and no other action \u2014 no \u201cShow Result\u201d is "
         "what makes the sheet close instantly."
         "<br><br><b>It will not appear until you enable it once:</b> share anything, "
-        "scroll to the bottom of the list, <b>Edit Actions</b>, switch <i>Save Reel</i> "
+        "scroll to the bottom of the list, <b>Edit Actions</b>, switch <i>Sawit</i> "
         "on, and tap the green + to pin it where you can reach it."
         "</p></details>"
         "<details class=row-d><summary><span>Or skip it entirely</span>"
@@ -1199,6 +1259,22 @@ body{{padding-bottom:calc(4.9rem + env(safe-area-inset-bottom))}}
   margin:0 0 1.1rem;text-align:left}}
 .warn{{background:var(--failed-bg);color:var(--failed)}}
 .good{{background:var(--tint-soft);color:var(--tint)}}
+.welcome{{max-width:30rem;margin:0 auto;padding:2.5rem 0 1rem}}
+.welcome h1{{font-size:2rem;letter-spacing:-.03em;margin:0 0 .2rem}}
+.welcome .tag{{color:var(--faint);font-size:.9375rem;margin:0 0 2rem}}
+.step{{display:flex;gap:.9rem;align-items:flex-start;margin:0 0 1.9rem}}
+.step .n{{
+  flex:none;width:1.7rem;height:1.7rem;border-radius:50%;
+  display:grid;place-items:center;margin-top:.15rem;
+  background:var(--tint);color:#fff;font-size:.8125rem;font-weight:700;
+}}
+.step h2{{font-size:1.0625rem;line-height:1.25;letter-spacing:-.016em;font-weight:640;
+  color:var(--fg);text-transform:none;margin:0 0 .3rem}}
+.step .lede{{font-size:.9375rem;line-height:1.45;margin:0 0 .6rem}}
+.row.primary{{background:var(--tint);border-color:var(--tint);color:#fff;font-weight:640}}
+.row.primary .chev{{color:rgba(255,255,255,.7)}}
+.copy{{min-height:38px;padding:0 .9rem;font-size:.875rem;margin:0 0 .5rem;
+  background:var(--tint-soft);color:var(--tint)}}
 .keybox{{background:var(--surface);border:1px solid var(--line);border-radius:.7rem;
   padding:.85rem 1rem;font-size:.8125rem;overflow-x:auto;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}}

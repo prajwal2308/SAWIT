@@ -93,11 +93,13 @@ def test_bootstrap_runs_once(settings):
 
 # ---- signing in ----
 
-def test_signing_up_then_straight_into_your_notes(web):
+def test_signing_up_lands_on_the_setup_not_an_empty_list(web):
+    """A new account has no notes, so the note list is a dead end. Send them to
+    the thing that makes the app do something."""
     response = web.post("/signup", data={"email": "New@Test.com", "password": PASSWORD},
                         follow_redirects=False)
 
-    assert response.status_code == 303 and response.headers["location"] == "/"
+    assert response.status_code == 303 and response.headers["location"] == "/welcome"
     assert web.cookies.get(SESSION_COOKIE)
     assert web.get("/").status_code == 200
     # Stored lowercased, so casing cannot create a second account.
@@ -209,7 +211,7 @@ def test_the_account_page_leads_with_the_one_tap_installer(web, settings):
     page = web.get("/account", headers={"X-API-Key": API_KEY}).text
 
     assert link in page
-    assert "Add the Save Reel shortcut" in page
+    assert "Add the Sawit shortcut" in page
     # The manual recipe stays, folded away rather than removed.
     assert "Or build it by hand" in page
 
@@ -218,3 +220,18 @@ def test_without_a_link_it_says_how_to_make_one(web, settings):
     bootstrap_owner(web.store, settings)
     page = web.get("/account", headers={"X-API-Key": API_KEY}).text
     assert "SAWIT_SHORTCUT_URL" in page
+
+
+def test_the_welcome_page_carries_your_key_and_the_installer(web, settings):
+    from dataclasses import replace as dc_replace
+
+    link = "https://www.icloud.com/shortcuts/deadbeef"
+    app.dependency_overrides[get_settings] = lambda: dc_replace(settings, shortcut_url=link)
+    web.post("/signup", data={"email": "new@test.com", "password": PASSWORD})
+
+    page = web.get("/welcome").text
+    key = web.store.user_by_email("new@test.com")["api_key"]
+
+    assert link in page
+    assert key in page, "the key has to be on the page they are told to paste it from"
+    assert "Add to Home Screen" in page
