@@ -190,10 +190,45 @@ def _parse(text: str, model: str) -> ReelNote:
     try:
         return ReelNote.model_validate_json(cleaned)
     except Exception as exc:
+        note = _salvage_object(cleaned)
+        if note is not None:
+            log.warning("%s wrapped its note in prose; recovered the object", model)
+            return note
         raise ExtractionError(
             f"{model} did not return a usable note ({exc}). "
             f"First 200 characters: {cleaned[:200]!r}"
         ) from exc
+
+
+def _salvage_object(text: str) -> ReelNote | None:
+    """Pull the note out of a reply that talks before it answers.
+
+    A reasoning model narrates — "We need to classify this..." — and the note
+    arrives after the thinking, which is a parse failure rather than a refusal.
+    Scan from each `{` to the matching close and take the first that validates,
+    so prose on either side is discarded rather than losing the whole note.
+    """
+    for start in (i for i, ch in enumerate(text) if ch == "{"):
+        depth, in_string, escaped = 0, False, False
+        for end in range(start, len(text)):
+            ch = text[end]
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = not in_string
+            elif not in_string:
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return ReelNote.model_validate_json(text[start:end + 1])
+                        except Exception:
+                            break
+    return None
 
 
 def _b64(frame: bytes) -> str:

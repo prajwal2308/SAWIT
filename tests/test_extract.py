@@ -174,3 +174,28 @@ def test_the_strict_schema_is_self_contained():
     key_fact = schema["properties"]["key_facts"]["items"]
     assert key_fact["additionalProperties"] is False
     assert key_fact["required"] == ["label", "value"]
+
+
+def test_a_note_wrapped_in_reasoning_is_recovered():
+    """A reasoning model narrates before it answers. The note is still in there,
+    and losing the whole reel to a prose preamble is the wrong trade."""
+    from app.extract import _parse
+
+    body = json.dumps({
+        "title": "The 50/30/20 budget rule",
+        "category": "finance",
+        "one_liner": "Split take-home pay into needs, wants and savings.",
+        "takeaways": ["50% needs"],
+        "key_facts": [{"label": "Savings share", "value": "20%"}],
+        "steps": [], "caveats": [], "tags": ["budget"],
+    })
+
+    note = _parse(f"We need to classify this reel. It is finance.\n{body}\nDone.", "m")
+    assert note.title == "The 50/30/20 budget rule"
+
+
+def test_a_reply_with_no_object_at_all_still_fails():
+    from app.extract import ExtractionError, _parse
+
+    with pytest.raises(ExtractionError):
+        _parse("I cannot summarise this reel.", "m")
