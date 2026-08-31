@@ -44,6 +44,15 @@ the reel asserts something with no support, or omits context that changes the \
 conclusion, say so in `caveats` rather than smoothing it over.
 - Write the title for someone scanning fifty notes six months from now. Ignore \
 the creator's clickbait phrasing.
+- Not every reel teaches something. Plenty are jokes, skits, or pure \
+entertainment. When that is what you are given, say plainly what happens in \
+`one_liner` and leave `steps` and `key_facts` empty. Reach for `other` before \
+forcing it into a topic it does not belong to.
+- An empty field is a correct answer. Never pad one to look complete.
+- A `key_fact` restates nothing: if the label and the value say the same thing, \
+it is on-screen text you have copied out, not a fact, and it does not belong in \
+the note. The label names what the value measures — "Savings share" / "20%", \
+never "20%" / "20%".
 
 Category guidance for the fields that vary:
 - finance: the rule or formula, the exact percentages and thresholds, what \
