@@ -107,6 +107,34 @@ def test_the_paste_box_needs_the_key(client):
     assert client.started == []
 
 
+def test_the_feed_shows_one_note_per_screen(client):
+    note_id = client.store.create_pending("https://x.test/r")
+    client.store.save_note(note_id, make_note(), transcript="fifty thirty twenty")
+
+    page = client.get("/feed", params={"k": API_KEY}).text
+
+    assert "The 50/30/20 budget rule" in page
+    assert "Multiply by 0.5 for needs" in page          # the steps travel with it
+    assert "scroll-snap-type:y mandatory" in page       # the platform does the paging
+    # The still is a poster, not a player — the reel itself lives on Instagram.
+    assert "https://x.test/r" in page
+
+
+def test_the_feed_leaves_out_notes_that_are_not_written_yet(client):
+    client.store.create_pending("https://x.test/pending")
+    ready = client.store.create_pending("https://x.test/ready")
+    client.store.save_note(ready, make_note(), transcript="t")
+
+    page = client.get("/feed", params={"k": API_KEY}).text
+
+    assert "The 50/30/20 budget rule" in page
+    assert "https://x.test/pending" not in page
+
+
+def test_the_feed_needs_the_key(client):
+    assert client.get("/feed").status_code == 401
+
+
 def test_a_browser_visit_trades_the_key_for_a_cookie(client):
     assert client.get("/", params={"k": API_KEY}).status_code == 200
     assert client.cookies.get(KEY_COOKIE) == API_KEY

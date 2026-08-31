@@ -351,6 +351,13 @@ def index(
     link_key = _link_key(request)
     key = html.escape(link_key, quote=True)
     chips = _category_chips(store.category_counts(), category, link_key, q)
+    ready = [n for n in notes if n["status"] == "ready"]
+    browse = (
+        f"<a class=browse href='/feed{_qs(k=link_key, category=category)}'>"
+        f"<span>Flick through {len(ready)} note{'' if len(ready) == 1 else 's'}</span>"
+        f"<span class=chev>&rsaquo;</span></a>"
+    ) if ready else ""
+
     if notes:
         rows = "\n".join(_card(note, key) for note in notes)
     elif category:
@@ -379,6 +386,7 @@ def index(
               </form>
               {chips}
             </div>
+            {browse}
             {rows}"""
     ))
 
@@ -401,6 +409,71 @@ def _category_chips(
     chips = [chip("All", None, total)]
     chips += [chip(name, name, count) for name, count in counts]
     return f"<nav class=chips>{''.join(chips)}</nav>"
+
+
+@app.get("/feed", response_class=HTMLResponse, dependencies=[Depends(require_key)])
+def feed(
+    request: Request,
+    category: str | None = None,
+    k: str | None = None,
+    store: Store = Depends(get_store),
+) -> HTMLResponse:
+    """The notes in the shape the reels arrived in: one per screen, thumbed through.
+
+    Scroll-snap does the paging, so the momentum, the rubber-band at the ends and
+    the ability to catch a card mid-flight are the platform's rather than ours.
+    """
+    link_key = _link_key(request)
+    qs = html.escape(_qs(k=link_key), quote=True)
+    notes = [n for n in store.recent(60, category=category) if n["status"] == "ready"]
+    esc = lambda s: html.escape(str(s or ""))  # noqa: E731
+
+    if not notes:
+        return HTMLResponse(_page(
+            f"<a class=back href='/{_qs(k=link_key)}'>&lsaquo; All notes</a>"
+            "<p class=empty>Nothing to flick through yet.</p>"
+        ))
+
+    cards = []
+    for n in notes:
+        note_id = esc(n["id"])
+        thumb = (f"<img src='/notes/{note_id}/thumb.jpg{qs}' alt='' loading=lazy>"
+                 if n["has_thumbnail"] else "")
+
+        def bullets(items: list, render) -> str:
+            return "".join(render(i) for i in items) if items else ""
+
+        body = "".join([
+            f"<p class=meta>{esc(n['category'])}"
+            + (f" &middot; {esc(n['uploader'])}" if n.get("uploader") else "") + "</p>",
+            f"<h2 class=feed-title>{esc(n['title'])}</h2>",
+            f"<p class=lede>{esc(n['one_liner'])}</p>" if n.get("one_liner") else "",
+            f"<ul class=takeaways>{bullets(n['takeaways'], lambda t: f'<li>{esc(t)}</li>')}</ul>"
+            if n["takeaways"] else "",
+            f"<ol class=steps>{bullets(n['steps'], lambda s: f'<li>{esc(s)}</li>')}</ol>"
+            if n["steps"] else "",
+            "<div class=facts>" + bullets(
+                n["key_facts"],
+                lambda f: f"<div class=fact><dt>{esc(f['label'])}</dt>"
+                          f"<dd>{esc(f['value'])}</dd></div>",
+            ) + "</div>" if n["key_facts"] else "",
+        ])
+        cards.append(
+            f"<article class=reel>"
+            f"<a class=stage href='{esc(n['url'])}' target=_blank rel=noopener>"
+            f"{thumb}<span class=play aria-hidden=true></span>"
+            f"<span class=stage-hint>Watch on Instagram</span></a>"
+            f"<div class=sheet>{body}"
+            f"<a class=full href='/notes/{note_id}{qs}'>Open the full note &rsaquo;</a>"
+            f"</div></article>"
+        )
+
+    return HTMLResponse(_page(
+        f"<div class=feed>"
+        f"<a class='back feed-back' href='/{_qs(k=link_key)}'>&lsaquo; All notes</a>"
+        + "".join(cards) + "</div>",
+        full_bleed=True,
+    ))
 
 
 @app.get("/notes/{note_id}", response_class=HTMLResponse, dependencies=[Depends(require_key)])
@@ -499,7 +572,8 @@ def _card(note: dict[str, Any], key: str) -> str:
             f"<p class=lede>{esc(note['one_liner'])}</p></div></a>")
 
 
-def _page(body: str) -> str:
+def _page(body: str, full_bleed: bool = False) -> str:
+    cls = "bleed" if full_bleed else ""
     return f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name=theme-color content="#fbfbfd" media="(prefers-color-scheme:light)">
@@ -601,6 +675,15 @@ button:active{{transform:scale(.97);background:var(--press)}}
 .chip.on{{background:var(--fg);color:var(--bg);border-color:var(--fg)}}
 .chip.on span{{color:var(--bg);opacity:.65}}
 
+.browse{{
+  display:flex;align-items:center;justify-content:space-between;
+  min-height:48px;padding:0 .95rem;margin:.85rem 0 .35rem;
+  border-radius:.8rem;background:var(--surface);border:1px solid var(--line);
+  font-size:.9375rem;font-weight:590;letter-spacing:-.01em;color:var(--tint);
+  transition:transform .1s ease-out,background-color .15s ease-out;
+}}
+.browse:active{{transform:scale(.985);background:var(--press)}}
+.browse .chev{{color:var(--faint);font-size:1.25rem}}
 .card{{
   display:flex;gap:.85rem;align-items:flex-start;
   padding:.85rem;margin:0 -.85rem;border-radius:.9rem;
@@ -641,10 +724,67 @@ summary{{cursor:pointer;min-height:44px;display:flex;align-items:center;
 .actions button.danger{{color:var(--failed);
   border-color:color-mix(in srgb,var(--failed) 45%,transparent)}}
 
+/* ---- Feed: one note per screen, in the shape the reel arrived in ---- */
+body.bleed{{padding:0;overflow:hidden}}
+body.bleed .shell{{max-width:none}}
+.feed{{
+  height:100dvh;overflow-y:auto;scroll-snap-type:y mandatory;
+  scroll-behavior:smooth;overscroll-behavior-y:contain;
+  -webkit-overflow-scrolling:touch;scrollbar-width:none;
+}}
+.feed::-webkit-scrollbar{{display:none}}
+.feed-back{{position:fixed;top:max(.5rem,env(safe-area-inset-top));left:.85rem;z-index:20;
+  padding:0 .8rem;border-radius:999px;color:#fff;
+  background:rgba(0,0,0,.42);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}}
+.reel{{
+  height:100dvh;scroll-snap-align:start;scroll-snap-stop:always;
+  display:grid;grid-template-rows:minmax(0,52fr) minmax(0,48fr);
+}}
+.stage{{position:relative;overflow:hidden;background:#000;display:block}}
+.stage img{{width:100%;height:100%;object-fit:cover;display:block}}
+/* The still is a poster, so say so rather than implying it will play here. */
+.stage::after{{content:"";position:absolute;inset:auto 0 0;height:45%;
+  background:linear-gradient(transparent,rgba(0,0,0,.55));pointer-events:none}}
+.play{{
+  position:absolute;top:50%;left:50%;width:62px;height:62px;margin:-31px 0 0 -31px;
+  border-radius:50%;background:rgba(255,255,255,.16);
+  -webkit-backdrop-filter:blur(16px) saturate(180%);backdrop-filter:blur(16px) saturate(180%);
+  border:1px solid rgba(255,255,255,.3);
+  transition:transform .1s ease-out,background-color .15s ease-out;
+}}
+.play::before{{content:"";position:absolute;top:50%;left:54%;transform:translate(-50%,-50%);
+  border-style:solid;border-width:9px 0 9px 15px;
+  border-color:transparent transparent transparent #fff}}
+.stage:active .play{{transform:scale(.92);background:rgba(255,255,255,.28)}}
+.stage-hint{{position:absolute;left:0;right:0;bottom:.85rem;text-align:center;
+  color:rgba(255,255,255,.92);font-size:.8125rem;font-weight:590;letter-spacing:-.005em;
+  text-shadow:0 1px 3px rgba(0,0,0,.5)}}
+.sheet{{
+  overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
+  padding:1rem 1.15rem calc(1.5rem + env(safe-area-inset-bottom));
+  background:var(--bg);scrollbar-width:none;
+}}
+.sheet::-webkit-scrollbar{{display:none}}
+.feed-title{{font-size:1.3125rem;line-height:1.2;letter-spacing:-.021em;font-weight:700;
+  color:var(--fg);text-transform:none;margin:.1rem 0 .35rem}}
+.sheet .lede{{font-size:1rem;line-height:1.42;margin:0 0 .75rem}}
+.takeaways,.steps{{margin:.25rem 0 .8rem;padding-left:1.1rem;font-size:.9375rem;line-height:1.45}}
+.takeaways li,.steps li{{margin:.3rem 0}}
+.facts{{display:flex;flex-wrap:wrap;gap:.4rem;margin:.15rem 0 .85rem}}
+.fact{{padding:.35rem .6rem;border-radius:.6rem;background:var(--surface);
+  border:1px solid var(--line)}}
+.fact dt{{font-size:.6875rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--faint);margin:0}}
+.fact dd{{margin:.1rem 0 0;font-size:.9375rem;font-weight:600;letter-spacing:-.01em;
+  font-variant-numeric:tabular-nums}}
+.full{{display:inline-flex;min-height:44px;align-items:center;color:var(--tint);
+  font-size:.9375rem;font-weight:510}}
+
 @media(prefers-reduced-motion:reduce){{
   *,*::before,*::after{{animation-duration:.01ms !important;animation-iteration-count:1 !important;
     transition-duration:.01ms !important}}
-  button:active,.card:active,.chip:active{{transform:none}}
+  button:active,.card:active,.chip:active,.stage:active .play{{transform:none}}
+  .feed{{scroll-behavior:auto}}
 }}
 @media(prefers-reduced-transparency:reduce){{
   .bar{{background:var(--bg);-webkit-backdrop-filter:none;backdrop-filter:none}}
@@ -657,4 +797,4 @@ summary{{cursor:pointer;min-height:44px;display:flex;align-items:center;
       --dim:#d8d8dc;--faint:#c0c0c6}}
   }}
 }}
-</style></head><body><div class=shell>{body}</div></body></html>"""
+</style></head><body class="{cls}"><div class=shell>{body}</div></body></html>"""
