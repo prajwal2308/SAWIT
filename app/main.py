@@ -362,19 +362,23 @@ def index(
     # value still puts a bare `k=` on every search you run.
     key_field = f'<input type=hidden name=k value="{key}">' if key else ""
     return HTMLResponse(_page(
-        f"""<form method=post action="/add{html.escape(_qs(k=link_key), quote=True)}"
-                  class=add>
-              <input name=url type=url required
-                     placeholder="Paste a reel link to save it" autocomplete=off>
-              <button>Save</button>
-            </form>
-            <form method=get>
-              {key_field}
-              <input type=hidden name=category value="{html.escape(category or '', quote=True)}">
-              <input name=q value="{html.escape(q or '', quote=True)}"
-                     placeholder="Search everything you saved" autocomplete=off>
-            </form>
-            {chips}
+        f"""<div class=bar>
+              <form method=post action="/add{html.escape(_qs(k=link_key), quote=True)}"
+                    class=add>
+                <input name=url type=url required
+                       placeholder="Paste a reel link" autocomplete=off
+                       autocapitalize=off autocorrect=off spellcheck=false>
+                <button>Save</button>
+              </form>
+              <form method=get>
+                {key_field}
+                <input type=hidden name=category value="{html.escape(category or '', quote=True)}">
+                <input name=q value="{html.escape(q or '', quote=True)}" type=search
+                       placeholder="Search everything you saved" autocomplete=off
+                       style="margin-top:.5rem">
+              </form>
+              {chips}
+            </div>
             {rows}"""
     ))
 
@@ -415,11 +419,16 @@ def note_page(
     esc = lambda s: html.escape(str(s or ""))  # noqa: E731
 
     if note["status"] != "ready":
-        detail = esc(note.get("error") or "Still working on it.")
+        failed = note["status"] == "failed"
+        detail = esc(note.get("error") or "This one is still being written.")
         return HTMLResponse(_page(
-            f"<a href='{home}'>&larr; all notes</a>"
-            f"<h1>{esc(note['status'])}</h1><p>{detail}</p>"
-            f"<p><a href='{esc(note['url'])}'>The original reel</a></p>"
+            f"<a class=back href='{home}'>&lsaquo; All notes</a>"
+            f"<p style='margin:.6rem 0 .5rem'>"
+            f"<span class='pill {'failed' if failed else 'pending'}'>"
+            f"<span class=dot></span>{'Failed' if failed else 'Working'}</span></p>"
+            f"<h1>{'It did not go through' if failed else 'Working on it'}</h1>"
+            f"<p class=lede-lg>{detail}</p>"
+            f"<p class=note-meta><a href='{esc(note['url'])}'>The original reel</a></p>"
             f"{_actions(note, key)}"
         ))
 
@@ -433,20 +442,22 @@ def note_page(
         f"/{_qs(k=link_key, category=note['category'])}", quote=True
     )
     parts = [
-        f"<a href='{home}'>&larr; all notes</a>",
+        f"<a class=back href='{home}'>&lsaquo; All notes</a>",
         f"<h1>{esc(note['title'])}</h1>",
-        f"<p class=meta><a href='{category_href}'>"
+        f"<p class=note-meta><a href='{category_href}'>"
         f"{esc(note['category'])}</a>"
         + (f" &middot; {esc(note['uploader'])}" if note.get("uploader") else "")
         + "</p>",
-        f"<p class=lede>{esc(note['one_liner'])}</p>",
+        f"<p class=lede-lg>{esc(note['one_liner'])}</p>",
         section("Takeaways", note["takeaways"], lambda t: f"<li>{esc(t)}</li>"),
         section("Steps", note["steps"], lambda s: f"<li>{esc(s)}</li>"),
         section("Key facts", note["key_facts"],
                 lambda f: f"<li><b>{esc(f['label'])}:</b> {esc(f['value'])}</li>"),
         section("Caveats", note["caveats"], lambda c: f"<li>{esc(c)}</li>"),
-        f"<p><a href='{esc(note['url'])}'>Open the original reel</a></p>",
-        f"<details><summary>Transcript</summary><p>{esc(note['transcript'])}</p></details>",
+        f"<p class=note-meta style='margin-top:1.75rem'>"
+        f"<a href='{esc(note['url'])}'>Open the original reel &rsaquo;</a></p>",
+        f"<details><summary>Transcript</summary><p>{esc(note['transcript'])}</p></details>"
+        if note["transcript"] else "",
         _actions(note, key),
     ]
     return HTMLResponse(_page("".join(parts)))
@@ -472,9 +483,13 @@ def _card(note: dict[str, Any], key: str) -> str:
     note_id = esc(note["id"])
     qs = esc(_qs(k=key), quote=True)
     if note["status"] != "ready":
-        label = "failed" if note["status"] == "failed" else "working…"
+        failed = note["status"] == "failed"
+        # State carries a shape and a colour, so what needs you reads at a glance
+        # rather than having to be read.
+        pill = (f"<span class='pill {'failed' if failed else 'pending'}'>"
+                f"<span class=dot></span>{'Failed' if failed else 'Working'}</span>")
         return (f"<a class=card href='/notes/{note_id}{qs}'>"
-                f"<div><p class=meta>{label}</p>"
+                f"<div>{pill}"
                 f"<p class=lede>{esc(note.get('error') or note['url'])}</p></div></a>")
     thumb = (f"<img src='/notes/{note_id}/thumb.jpg{qs}' alt='' loading=lazy>"
              if note["has_thumbnail"] else "")
@@ -486,38 +501,160 @@ def _card(note: dict[str, Any], key: str) -> str:
 
 def _page(body: str) -> str:
     return f"""<!doctype html><html lang=en><head><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name=theme-color content="#fbfbfd" media="(prefers-color-scheme:light)">
+<meta name=theme-color content="#000000" media="(prefers-color-scheme:dark)">
+<meta name=apple-mobile-web-app-capable content=yes>
+<meta name=apple-mobile-web-app-title content=Sawit>
 <title>Sawit</title><style>
-:root{{color-scheme:light dark;--fg:#111;--dim:#666;--line:#e5e5e5;--bg:#fff}}
-@media(prefers-color-scheme:dark){{:root{{--fg:#eee;--dim:#999;--line:#2a2a2a;--bg:#111}}}}
+:root{{
+  color-scheme:light dark;
+  --bg:#fbfbfd; --surface:#fff; --fg:#1d1d1f; --dim:#6e6e73; --faint:#8e8e93;
+  --line:rgba(0,0,0,.10); --line-strong:rgba(0,0,0,.16);
+  --tint:#0071e3;            /* interactive */
+  --pending:#8e6d00;         /* semantic: still working */
+  --pending-bg:rgba(255,196,0,.14);
+  --failed:#c7362b;          /* semantic: needs you */
+  --failed-bg:rgba(199,54,43,.10);
+  --chrome:rgba(251,251,253,.72);
+  --press:rgba(0,0,0,.05);
+  --shadow:0 1px 2px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.06);
+}}
+@media(prefers-color-scheme:dark){{:root{{
+  --bg:#000; --surface:#1c1c1e; --fg:#f5f5f7; --dim:#98989d; --faint:#7c7c80;
+  --line:rgba(255,255,255,.13); --line-strong:rgba(255,255,255,.22);
+  --tint:#0a84ff;
+  --pending:#ffd426; --pending-bg:rgba(255,212,38,.14);
+  --failed:#ff6961; --failed-bg:rgba(255,105,97,.13);
+  --chrome:rgba(0,0,0,.72);
+  --press:rgba(255,255,255,.08);
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.5);
+}}}}
 *{{box-sizing:border-box}}
-body{{margin:0 auto;padding:1rem;max-width:44rem;background:var(--bg);color:var(--fg);
-font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}
-h1{{font-size:1.5rem;margin:.4rem 0}} h2{{font-size:1rem;margin:1.4rem 0 .4rem}}
-h3{{font-size:1.05rem;margin:.2rem 0}}
-input{{width:100%;padding:.7rem;font-size:1rem;border:1px solid var(--line);
-border-radius:.6rem;background:transparent;color:var(--fg);margin-bottom:1rem}}
-a{{color:inherit}} ul{{margin:.3rem 0;padding-left:1.2rem}} li{{margin:.3rem 0}}
-.card{{display:flex;gap:.8rem;padding:.8rem 0;border-bottom:1px solid var(--line);
-text-decoration:none}}
-.card img{{width:72px;height:96px;object-fit:cover;border-radius:.5rem;flex:none}}
-.meta{{color:var(--dim);font-size:.8rem;text-transform:uppercase;
-letter-spacing:.04em;margin:0}}
-.lede{{margin:.25rem 0;color:var(--dim)}} .empty{{color:var(--dim)}}
-.chips{{display:flex;gap:.4rem;overflow-x:auto;padding-bottom:.6rem;
-margin-bottom:.4rem;-webkit-overflow-scrolling:touch}}
-.chip{{flex:none;padding:.35rem .7rem;border:1px solid var(--line);border-radius:999px;
-font-size:.85rem;text-decoration:none;white-space:nowrap}}
-.chip span{{color:var(--dim)}}
+html{{-webkit-text-size-adjust:100%}}
+body{{
+  margin:0;background:var(--bg);color:var(--fg);
+  font:400 17px/1.47 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+  letter-spacing:-.01em;                    /* body sits near zero */
+  -webkit-font-smoothing:antialiased;
+  padding:0 max(1rem,env(safe-area-inset-left)) calc(3rem + env(safe-area-inset-bottom));
+}}
+.shell{{max-width:44rem;margin:0 auto}}
+/* Larger type takes progressively tighter tracking. */
+h1{{font-size:1.75rem;line-height:1.14;letter-spacing:-.024em;font-weight:700;margin:.1rem 0 .9rem}}
+h2{{font-size:.8125rem;line-height:1.3;letter-spacing:.05em;text-transform:uppercase;
+  font-weight:600;color:var(--faint);margin:2rem 0 .5rem}}
+h3{{font-size:1.0625rem;line-height:1.28;letter-spacing:-.016em;font-weight:600;margin:.15rem 0}}
+p{{margin:0 0 .85rem}}
+a{{color:inherit;text-decoration:none}}
+ul{{margin:.2rem 0;padding-left:1.15rem}} li{{margin:.35rem 0}}
+
+/* Chrome floats; content scrolls beneath it. */
+.bar{{
+  position:sticky;top:0;z-index:10;
+  margin:0 calc(-1 * max(1rem,env(safe-area-inset-left)));
+  padding:max(.6rem,env(safe-area-inset-top)) max(1rem,env(safe-area-inset-left)) .55rem;
+  background:var(--chrome);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);
+  backdrop-filter:saturate(180%) blur(20px);
+}}
+/* A fade where content meets floating chrome, not a hard rule. */
+.bar::after{{content:"";position:absolute;left:0;right:0;bottom:-12px;height:12px;
+  background:linear-gradient(var(--chrome),transparent);pointer-events:none}}
+
+input{{
+  width:100%;min-height:44px;padding:.6rem .85rem;font:inherit;font-size:1.0625rem;
+  border:1px solid var(--line);border-radius:.7rem;
+  background:var(--surface);color:var(--fg);
+  transition:border-color .15s ease,box-shadow .15s ease;
+}}
+input::placeholder{{color:var(--faint)}}
+input:focus{{outline:none;border-color:var(--tint);
+  box-shadow:0 0 0 3.5px color-mix(in srgb,var(--tint) 22%,transparent)}}
+:focus-visible{{outline:2px solid var(--tint);outline-offset:2px}}
+
+button{{
+  font:inherit;font-weight:590;letter-spacing:-.01em;cursor:pointer;
+  border:1px solid var(--line-strong);border-radius:.7rem;
+  background:var(--surface);color:var(--fg);
+  min-height:44px;padding:0 1.05rem;
+  transition:transform .1s ease-out,background-color .1s ease-out;
+}}
+/* Feedback belongs on the press, and it is immediate. */
+button:active{{transform:scale(.97);background:var(--press)}}
+.add{{display:flex;gap:.5rem;align-items:center}}
+.add button{{flex:none;color:var(--tint);border-color:var(--tint)}}
+.add input{{margin:0}}
+
+.chips{{display:flex;gap:.45rem;overflow-x:auto;padding:.55rem 0 .15rem;
+  scrollbar-width:none;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain}}
+.chips::-webkit-scrollbar{{display:none}}
+.chip{{
+  flex:none;display:inline-flex;align-items:center;gap:.34rem;
+  min-height:32px;padding:0 .8rem;border:1px solid var(--line);border-radius:999px;
+  font-size:.875rem;font-weight:510;letter-spacing:-.006em;white-space:nowrap;
+  background:var(--surface);
+  transition:transform .1s ease-out,background-color .15s ease-out;
+}}
+.chip:active{{transform:scale(.96)}}
+.chip span{{color:var(--faint);font-variant-numeric:tabular-nums}}
 .chip.on{{background:var(--fg);color:var(--bg);border-color:var(--fg)}}
-.chip.on span{{color:var(--bg);opacity:.7}}
-.add{{display:flex;gap:.5rem;align-items:flex-start}}
-.add button{{flex:none;height:2.85rem;padding:0 1.1rem;font-size:1rem;
-border:1px solid var(--line);border-radius:.6rem;background:transparent;
-color:var(--fg);cursor:pointer}}
-details{{margin-top:1.5rem;color:var(--dim)}}
-.actions{{display:flex;gap:.5rem;margin:2rem 0 1rem}}
-.actions button{{padding:.5rem .9rem;font-size:.9rem;border:1px solid var(--line);
-border-radius:.5rem;background:transparent;color:var(--fg);cursor:pointer}}
-.actions button.danger{{color:#c0392b;border-color:#c0392b}}
-</style></head><body>{body}</body></html>"""
+.chip.on span{{color:var(--bg);opacity:.65}}
+
+.card{{
+  display:flex;gap:.85rem;align-items:flex-start;
+  padding:.85rem;margin:0 -.85rem;border-radius:.9rem;
+  transition:transform .1s ease-out,background-color .15s ease-out;
+}}
+.card + .card{{box-shadow:0 -1px 0 var(--line)}}
+.card:active{{transform:scale(.985);background:var(--press)}}
+.card img{{width:66px;height:88px;object-fit:cover;border-radius:.6rem;flex:none;
+  background:var(--press)}}
+.card > div{{min-width:0;flex:1}}
+.meta{{color:var(--faint);font-size:.75rem;font-weight:600;text-transform:uppercase;
+  letter-spacing:.055em;margin:0 0 .12rem}}
+.lede{{margin:.18rem 0 0;color:var(--dim);font-size:.9375rem;line-height:1.42}}
+.empty{{color:var(--faint);padding:2.5rem 0;text-align:center}}
+
+/* State reads as shape and colour, not only as words. */
+.pill{{display:inline-flex;align-items:center;gap:.35rem;padding:.15rem .5rem;
+  border-radius:999px;font-size:.75rem;font-weight:600;letter-spacing:.01em;
+  text-transform:none}}
+.pill.pending{{color:var(--pending);background:var(--pending-bg)}}
+.pill.failed{{color:var(--failed);background:var(--failed-bg)}}
+.pill .dot{{width:6px;height:6px;border-radius:50%;background:currentColor}}
+.pill.pending .dot{{animation:pulse 1.8s ease-in-out infinite}}
+@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.35}}}}
+
+.back{{display:inline-flex;align-items:center;gap:.2rem;min-height:44px;
+  color:var(--tint);font-size:1.0625rem;letter-spacing:-.01em}}
+.back:active{{opacity:.55}}
+.note-meta{{color:var(--dim);font-size:.9375rem;margin:.15rem 0 1rem}}
+.note-meta a{{color:var(--tint)}}
+.lede-lg{{font-size:1.1875rem;line-height:1.4;letter-spacing:-.014em;color:var(--dim);
+  margin:0 0 .3rem}}
+details{{margin-top:1.75rem;color:var(--dim);font-size:.9375rem}}
+summary{{cursor:pointer;min-height:44px;display:flex;align-items:center;
+  color:var(--tint);font-weight:510}}
+
+.actions{{display:flex;gap:.55rem;margin:2.25rem 0 1rem}}
+.actions button.danger{{color:var(--failed);
+  border-color:color-mix(in srgb,var(--failed) 45%,transparent)}}
+
+@media(prefers-reduced-motion:reduce){{
+  *,*::before,*::after{{animation-duration:.01ms !important;animation-iteration-count:1 !important;
+    transition-duration:.01ms !important}}
+  button:active,.card:active,.chip:active{{transform:none}}
+}}
+@media(prefers-reduced-transparency:reduce){{
+  .bar{{background:var(--bg);-webkit-backdrop-filter:none;backdrop-filter:none}}
+  .bar::after{{display:none}}
+}}
+@media(prefers-contrast:more){{
+  :root{{--line:rgba(0,0,0,.4);--line-strong:rgba(0,0,0,.6);--dim:#3a3a3c;--faint:#4a4a4e}}
+  @media(prefers-color-scheme:dark){{
+    :root{{--line:rgba(255,255,255,.45);--line-strong:rgba(255,255,255,.7);
+      --dim:#d8d8dc;--faint:#c0c0c6}}
+  }}
+}}
+</style></head><body><div class=shell>{body}</div></body></html>"""
