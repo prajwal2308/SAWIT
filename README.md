@@ -228,6 +228,37 @@ Two settings in `fly.toml` are deliberate, not defaults: `auto_stop_machines`
 is off because stopping a machine mid-transcription loses the note, and the VM
 is 2 GB because faster-whisper will OOM below that.
 
+### Railway
+
+`railway.json` is committed and points at the same `Dockerfile`, so the build
+needs no configuration. Two things do:
+
+**Add a volume before the first deploy**, mounted at `/data`. Railway's
+filesystem is ephemeral — without one, every redeploy silently wipes your notes.
+Then set `SAWIT_DB=/data/sawit.sqlite3` to match the mount.
+
+**Keep it to one replica.** Work runs in-process and the store is a single
+SQLite file, so a second replica means background tasks that nothing tracks and
+two writers on one database. `numReplicas` is 1 in `railway.json` for that
+reason.
+
+```bash
+railway login
+railway init
+# Add the volume at /data in the dashboard, then set the variables:
+railway variables --set SAWIT_API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+                  --set SAWIT_DB=/data/sawit.sqlite3 \
+                  --set SAWIT_LLM=nvidia \
+                  --set NVIDIA_API_KEY=nvapi-... \
+                  --set NTFY_TOPIC=sawit-something-long-and-random
+railway up
+railway variables --set PUBLIC_BASE_URL=https://<your-app>.up.railway.app
+```
+
+Memory is the thing to watch: local `faster-whisper` wants ~2 GB. If the deploy
+OOMs, `SAWIT_ASR=hosted` moves transcription off the box and the service becomes
+small enough for the cheapest tier.
+
 ### Check it came up
 
 ```bash
