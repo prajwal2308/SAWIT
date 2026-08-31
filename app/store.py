@@ -14,8 +14,22 @@ from typing import Any
 from .schemas import ReelNote
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id            TEXT PRIMARY KEY,
+    email         TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    api_key       TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_idx ON users(lower(email));
+CREATE UNIQUE INDEX IF NOT EXISTS users_key_idx ON users(api_key);
+
 CREATE TABLE IF NOT EXISTS notes (
     id            TEXT PRIMARY KEY,
+    -- Whose note this is. Every read and write in this module filters on it;
+    -- see the class docstring for why that is enforced here and not upstream.
+    user_id       TEXT NOT NULL DEFAULT '',
     url           TEXT NOT NULL,
     status        TEXT NOT NULL,          -- pending | ready | failed
     created_at    TEXT NOT NULL,
@@ -63,8 +77,19 @@ def _now() -> str:
 
 
 class Store:
-    def __init__(self, path: str) -> None:
+    """Notes, scoped to one account.
+
+    SQLite has no row-level security, so the isolation lives here instead: a
+    Store is bound to a user id and every note query filters on it inside this
+    module. Endpoints cannot forget the filter because they never write one —
+    asking an unbound Store for notes raises rather than returning somebody
+    else's. That is the difference between isolation that holds and isolation
+    that holds until the next endpoint is added in a hurry.
+    """
+
+    def __init__(self, path: str, user_id: str | None = None) -> None:
         self.path = path
+        self.user_id = user_id
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as conn:
             conn.executescript(SCHEMA)
@@ -73,6 +98,27 @@ class Store:
             existing = {r["name"] for r in conn.execute("PRAGMA table_info(notes)")}
             if "embedding" not in existing:
                 conn.execute("ALTER TABLE notes ADD COLUMN embedding BLOB")
+            if "user_id" not in existing:
+                conn.execute("ALTER TABLE notes ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS notes_user_idx ON notes(user_id, created_at DESC)"
+            )
+
+    def for_user(self, user_id: str) -> Store:
+        """A view of the same database that can only see one account's notes."""
+        view = object.__new__(Store)
+        view.path = self.path
+        view.user_id = user_id
+        return view
+
+    @property
+    def _uid(self) -> str:
+        if not self.user_id:
+            raise RuntimeError(
+                "This Store is not bound to an account. Call for_user() before "
+                "reading or writing notes."
+            )
+        return self.user_id
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -89,6 +135,58 @@ class Store:
         finally:
             conn.close()
 
+    # ---- accounts. Deliberately unscoped: these are how a scope is obtained. ----
+
+    def create_user(self, email: str, password_hash: str, api_key: str) -> str | None:
+        """None when the email is already taken."""
+        user_id = uuid.uuid4().hex[:12]
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO users (id, email, password_hash, api_key, created_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (user_id, email, password_hash, api_key, _now()),
+                )
+        except sqlite3.IntegrityError:
+            return None
+        return user_id
+
+    def user_by_email(self, email: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM users WHERE lower(email)=lower(?)", (email,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def user_by_api_key(self, api_key: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM users WHERE api_key=?", (api_key,)).fetchone()
+        return dict(row) if row else None
+
+    def user_by_id(self, user_id: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+    def user_count(self) -> int:
+        with self._conn() as conn:
+            return conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+
+    def adopt_orphan_notes(self, user_id: str) -> int:
+        """Hand notes written before accounts existed to their owner.
+
+        Run once, when the first account is created on a database that already
+        has notes in it. Without this the existing library becomes invisible:
+        every row carries user_id '' and no account can ever match it.
+        """
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "UPDATE notes SET user_id=? WHERE user_id=''", (user_id,)
+            )
+        return cursor.rowcount
+
+    # ---- notes. Every one of these filters on the bound account. ----
+
     def create_pending(self, url: str, *, mid: str | None = None) -> str | None:
         """Returns None when `mid` was already accepted — a retried webhook."""
         note_id = uuid.uuid4().hex[:12]
@@ -96,9 +194,10 @@ class Store:
         try:
             with self._conn() as conn:
                 conn.execute(
-                    "INSERT INTO notes (id, url, status, created_at, updated_at, source_mid) "
-                    "VALUES (?,?,?,?,?,?)",
-                    (note_id, url, "pending", ts, ts, mid),
+                    "INSERT INTO notes "
+                    "(id, user_id, url, status, created_at, updated_at, source_mid) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (note_id, self._uid, url, "pending", ts, ts, mid),
                 )
         except sqlite3.IntegrityError:
             return None
@@ -106,7 +205,8 @@ class Store:
 
     def set_embedding(self, note_id: str, blob: bytes) -> None:
         with self._conn() as conn:
-            conn.execute("UPDATE notes SET embedding=? WHERE id=?", (blob, note_id))
+            conn.execute("UPDATE notes SET embedding=? WHERE id=? AND user_id=?",
+                         (blob, note_id, self._uid))
 
     def embeddings(self, category: str | None = None) -> list[tuple[str, bytes]]:
         """Every stored vector, for a similarity sweep in Python.
@@ -120,8 +220,8 @@ class Store:
         with self._conn() as conn:
             rows = conn.execute(
                 f"SELECT id, embedding FROM notes "
-                f"WHERE embedding IS NOT NULL AND status='ready' {clause}",
-                params,
+                f"WHERE user_id=? AND embedding IS NOT NULL AND status='ready' {clause}",
+                (self._uid, *params),
             ).fetchall()
         return [(r["id"], r["embedding"]) for r in rows]
 
@@ -130,9 +230,9 @@ class Store:
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT *, thumbnail IS NOT NULL AS has_thumbnail FROM notes "
-                "WHERE embedding IS NULL AND status='ready' "
+                "WHERE user_id=? AND embedding IS NULL AND status='ready' "
                 "ORDER BY created_at DESC LIMIT ?",
-                (limit,),
+                (self._uid, limit),
             ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
@@ -147,8 +247,8 @@ class Store:
         with self._conn() as conn:
             rows = conn.execute(
                 f"SELECT *, thumbnail IS NOT NULL AS has_thumbnail FROM notes "
-                f"WHERE id IN ({marks})",
-                tuple(ids),
+                f"WHERE user_id=? AND id IN ({marks})",
+                (self._uid, *ids),
             ).fetchall()
         found = {r["id"]: _row_to_dict(r) for r in rows}
         return [found[i] for i in ids if i in found]
@@ -163,17 +263,18 @@ class Store:
         """
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT id FROM notes WHERE url=? AND status='ready' "
+                "SELECT id FROM notes WHERE user_id=? AND url=? AND status='ready' "
                 "ORDER BY created_at DESC LIMIT 1",
-                (url,),
+                (self._uid, url),
             ).fetchone()
         return row["id"] if row else None
 
     def mark_failed(self, note_id: str, error: str) -> None:
         with self._conn() as conn:
             conn.execute(
-                "UPDATE notes SET status='failed', error=?, updated_at=? WHERE id=?",
-                (error[:2000], _now(), note_id),
+                "UPDATE notes SET status='failed', error=?, updated_at=? "
+                "WHERE id=? AND user_id=?",
+                (error[:2000], _now(), note_id, self._uid),
             )
 
     def save_note(
@@ -195,7 +296,7 @@ class Store:
                     title=?, category=?, one_liner=?,
                     takeaways=?, key_facts=?, steps=?, caveats=?, tags=?,
                     transcript=?, source_title=?, uploader=?, duration=?, thumbnail=?
-                WHERE id=?
+                WHERE id=? AND user_id=?
                 """,
                 (
                     _now(),
@@ -213,11 +314,13 @@ class Store:
                     duration,
                     thumbnail,
                     note_id,
+                    self._uid,
                 ),
             )
             # FTS rows are keyed by the notes rowid; delete-then-insert keeps a
             # re-processed note from matching twice.
-            row = conn.execute("SELECT rowid FROM notes WHERE id=?", (note_id,)).fetchone()
+            row = conn.execute("SELECT rowid FROM notes WHERE id=? AND user_id=?",
+                               (note_id, self._uid)).fetchone()
             if row is None:
                 return
             rowid = row["rowid"]
@@ -238,7 +341,8 @@ class Store:
     def status_counts(self) -> dict[str, int]:
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT status, COUNT(*) AS n FROM notes GROUP BY status"
+                "SELECT status, COUNT(*) AS n FROM notes WHERE user_id=? GROUP BY status",
+                (self._uid,),
             ).fetchall()
         return {r["status"]: r["n"] for r in rows}
 
@@ -262,45 +366,50 @@ class Store:
     def reset_to_pending(self, note_id: str) -> bool:
         with self._conn() as conn:
             cursor = conn.execute(
-                "UPDATE notes SET status='pending', error=NULL, updated_at=? WHERE id=?",
-                (_now(), note_id),
+                "UPDATE notes SET status='pending', error=NULL, updated_at=? "
+                "WHERE id=? AND user_id=?",
+                (_now(), note_id, self._uid),
             )
         return cursor.rowcount > 0
 
     def delete(self, note_id: str) -> bool:
         with self._conn() as conn:
-            row = conn.execute("SELECT rowid FROM notes WHERE id=?", (note_id,)).fetchone()
+            row = conn.execute("SELECT rowid FROM notes WHERE id=? AND user_id=?",
+                               (note_id, self._uid)).fetchone()
             if row is None:
                 return False
             conn.execute("DELETE FROM notes_fts WHERE rowid=?", (row["rowid"],))
-            conn.execute("DELETE FROM notes WHERE id=?", (note_id,))
+            conn.execute("DELETE FROM notes WHERE id=? AND user_id=?",
+                         (note_id, self._uid))
         return True
 
     def get(self, note_id: str) -> dict[str, Any] | None:
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT *, thumbnail IS NOT NULL AS has_thumbnail FROM notes WHERE id=?",
-                (note_id,),
+                "SELECT *, thumbnail IS NOT NULL AS has_thumbnail FROM notes "
+                "WHERE id=? AND user_id=?",
+                (note_id, self._uid),
             ).fetchone()
         return _row_to_dict(row) if row else None
 
     def get_thumbnail(self, note_id: str) -> bytes | None:
         with self._conn() as conn:
-            row = conn.execute("SELECT thumbnail FROM notes WHERE id=?", (note_id,)).fetchone()
+            row = conn.execute("SELECT thumbnail FROM notes WHERE id=? AND user_id=?",
+                               (note_id, self._uid)).fetchone()
         return row["thumbnail"] if row else None
 
     def recent(
         self, limit: int = 50, category: str | None = None
     ) -> list[dict[str, Any]]:
-        clause, params = _category_clause(category, prefix="")
+        clause, params = _category_clause(category, prefix="", conjunction="AND")
         with self._conn() as conn:
             rows = conn.execute(
                 f"""
                 SELECT *, thumbnail IS NOT NULL AS has_thumbnail FROM notes
-                {clause}
+                WHERE user_id=? {clause}
                 ORDER BY created_at DESC, rowid DESC LIMIT ?
                 """,
-                (*params, limit),
+                (self._uid, *params, limit),
             ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
@@ -318,11 +427,11 @@ class Store:
                 SELECT n.*, n.thumbnail IS NOT NULL AS has_thumbnail
                 FROM notes_fts f
                 JOIN notes n ON n.rowid = f.rowid
-                WHERE notes_fts MATCH ? {clause}
+                WHERE notes_fts MATCH ? AND n.user_id=? {clause}
                 ORDER BY n.created_at DESC, n.rowid DESC
                 LIMIT ?
                 """,
-                (cleaned, *params, limit),
+                (cleaned, self._uid, *params, limit),
             ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
@@ -336,10 +445,11 @@ class Store:
             rows = conn.execute(
                 """
                 SELECT category, COUNT(*) AS n FROM notes
-                WHERE category IS NOT NULL
+                WHERE user_id=? AND category IS NOT NULL
                 GROUP BY category
                 ORDER BY n DESC, category ASC
-                """
+                """,
+                (self._uid,),
             ).fetchall()
         return [(r["category"], r["n"]) for r in rows]
 

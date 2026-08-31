@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote_plus, urlencode
 
 from fastapi import (
     BackgroundTasks,
@@ -25,8 +25,8 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, ValidationError, field_validator
 
+from . import accounts, instagram
 from . import embed as embed_mod
-from . import instagram
 from .config import Settings, get_settings
 from .pipeline import Source, process
 from .store import Store
@@ -39,7 +39,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Fail fast on missing config rather than at the first shared reel, and
     # clear out anything a restart left mid-flight.
     settings = get_settings()
-    orphans = get_store().recover_orphans()
+    bootstrap_owner(base_store(), settings)
+    orphans = base_store().recover_orphans()
     if orphans:
         log.warning("Marked %d interrupted note(s) as failed; they can be retried", orphans)
     log.info(
@@ -53,8 +54,78 @@ app = FastAPI(title="Sawit", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 @lru_cache(maxsize=1)
-def get_store() -> Store:
+def base_store() -> Store:
+    """The unbound store: migrations, accounts, and boot-time recovery.
+
+    It cannot read notes — see Store's docstring. Everything that serves a
+    request goes through get_store() instead, which is bound to an account.
+    """
     return Store(get_settings().db_path)
+
+
+def bootstrap_owner(store: Store, settings: Settings) -> None:
+    """Turn a single-user deployment into account one, without losing anything.
+
+    SAWIT_API_KEY was the whole authentication story before accounts existed,
+    and it is already in somebody's Shortcut. It becomes the first account's
+    key, and the notes that predate accounts are handed to it — otherwise an
+    upgrade silently empties the library.
+    """
+    if store.user_count():
+        return
+    owner = store.create_user(
+        email=OWNER_EMAIL,
+        password_hash=accounts.hash_password(secrets.token_urlsafe(32)),
+        api_key=settings.api_key,
+    )
+    if owner is None:
+        return
+    adopted = store.adopt_orphan_notes(owner)
+    log.info("Created the first account and gave it %d existing note(s)", adopted)
+
+
+SESSION_COOKIE = "sawit_session"
+OWNER_EMAIL = "owner@localhost"
+
+
+def current_user(
+    request: Request,
+    k: str | None = Query(default=None, description="Key for browser views."),
+    settings: Settings = Depends(get_settings),
+    store: Store = Depends(base_store),
+) -> dict[str, Any]:
+    """Whose request this is.
+
+    Three ways in, in the order they are cheapest to check: the Shortcut's
+    header, a signed session cookie, and ?k= on a first browser visit. All
+    three resolve to one account, and the account is what everything
+    downstream is scoped to.
+    """
+    supplied = request.headers.get("x-api-key") or k or request.cookies.get(KEY_COOKIE)
+    if supplied and supplied.isascii():
+        user = store.user_by_api_key(supplied)
+        if user:
+            if k and request.cookies.get(KEY_COOKIE) != supplied:
+                request.state.grant_cookie = supplied
+            return user
+
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        user_id = accounts.read_session(token, settings.api_key)
+        if user_id:
+            user = store.user_by_id(user_id)
+            if user:
+                return user
+
+    raise HTTPException(status_code=401, detail="Bad or missing API key.")
+
+
+def get_store(
+    user: dict[str, Any] = Depends(current_user),
+    base: Store = Depends(base_store),
+) -> Store:
+    """A store that can only see the notes of whoever is asking."""
+    return base.for_user(user["id"])
 
 
 # A key in ?k= is a key in your history, your bookmarks and every referer the
@@ -64,19 +135,10 @@ KEY_COOKIE = "sawit_key"
 KEY_COOKIE_MAX_AGE = 60 * 60 * 24 * 365
 
 
-def require_key(
-    request: Request,
-    k: str | None = Query(default=None, description="Key for browser views."),
-    settings: Settings = Depends(get_settings),
-) -> None:
-    """Accept the key as a header (Shortcut), ?k= (first visit) or the cookie."""
-    supplied = request.headers.get("x-api-key") or k or request.cookies.get(KEY_COOKIE) or ""
-    # compare_digest rejects non-ASCII outright rather than comparing it.
-    if not supplied.isascii() or not secrets.compare_digest(supplied, settings.api_key):
-        raise HTTPException(status_code=401, detail="Bad or missing API key.")
-    if k and request.cookies.get(KEY_COOKIE) != supplied:
-        # Set on the way out, where the finished response is.
-        request.state.grant_cookie = supplied
+def require_key(user: dict[str, Any] = Depends(current_user)) -> None:
+    """The gate every protected route already declares. Resolving the account
+    is the check now — an unknown key matches no account."""
+    return None
 
 
 @app.middleware("http")
@@ -123,6 +185,118 @@ class IngestRequest(BaseModel):
             if token.startswith(("http://", "https://")):
                 return token
         raise ValueError("No http(s) URL found in the shared text.")
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(error: str | None = None, joined: str | None = None) -> HTMLResponse:
+    return HTMLResponse(_auth_page("in", error, joined))
+
+
+@app.get("/signup", response_class=HTMLResponse)
+def signup_page(error: str | None = None) -> HTMLResponse:
+    return HTMLResponse(_auth_page("up", error, None))
+
+
+@app.post("/login")
+def login(
+    email: str = Form(...),
+    password: str = Form(...),
+    settings: Settings = Depends(get_settings),
+    store: Store = Depends(base_store),
+) -> Response:
+    user = store.user_by_email(accounts.normalise_email(email))
+    # Verify against a decoy hash when the account is unknown, so a wrong email
+    # and a wrong password take the same time to fail and cannot be told apart.
+    stored = user["password_hash"] if user else _DECOY_HASH
+    if not accounts.verify_password(password, stored) or user is None:
+        return _redirect("/login?error=Those+details+did+not+match.")
+    return _with_session(_redirect("/"), user["id"], settings)
+
+
+@app.post("/signup")
+def signup(
+    email: str = Form(...),
+    password: str = Form(...),
+    settings: Settings = Depends(get_settings),
+    store: Store = Depends(base_store),
+) -> Response:
+    email = accounts.normalise_email(email)
+    if "@" not in email or len(email) < 3:
+        return _redirect("/signup?error=That+is+not+an+email+address.")
+    try:
+        accounts.check_password_strength(password)
+    except accounts.AuthError as exc:
+        return _redirect(f"/signup?error={quote_plus(str(exc))}")
+
+    user_id = store.create_user(email, accounts.hash_password(password),
+                                accounts.new_api_key())
+    if user_id is None:
+        return _redirect("/signup?error=That+email+is+already+registered.")
+    return _with_session(_redirect("/"), user_id, settings)
+
+
+@app.post("/logout")
+def logout() -> Response:
+    response = _redirect("/login")
+    # Both, or the API key cookie would silently sign you back in.
+    response.delete_cookie(SESSION_COOKIE)
+    response.delete_cookie(KEY_COOKIE)
+    return response
+
+
+@app.get("/account", response_class=HTMLResponse, dependencies=[Depends(require_key)])
+def account_page(user: dict[str, Any] = Depends(current_user)) -> HTMLResponse:
+    """Where the Shortcut's key lives — one per account, not one per server."""
+    return HTMLResponse(_page(
+        "<a class=back href='/'>&lsaquo; All notes</a>"
+        f"<h1>Account</h1><p class=note-meta>{html.escape(user['email'])}</p>"
+        "<h2>Your key</h2>"
+        "<p class=lede>The Shortcut sends this as <code>X-API-Key</code>. "
+        "It opens your notes and nobody else's — treat it like a password.</p>"
+        f"<pre class=keybox>{html.escape(user['api_key'])}</pre>"
+        "<form method=post action='/logout' class=actions>"
+        "<button class=danger>Sign out</button></form>"
+    ))
+
+
+def _redirect(path: str) -> RedirectResponse:
+    return RedirectResponse(path, status_code=303)
+
+
+def _with_session(response: Response, user_id: str, settings: Settings) -> Response:
+    response.set_cookie(
+        SESSION_COOKIE, accounts.sign_session(user_id, settings.api_key),
+        max_age=accounts.SESSION_TTL, httponly=True, samesite="lax",
+        secure=settings.public_base_url is not None
+        and settings.public_base_url.startswith("https"),
+    )
+    return response
+
+
+# Hashing a throwaway password once at import keeps the unknown-account path
+# the same cost as the known one.
+_DECOY_HASH = accounts.hash_password(secrets.token_urlsafe(16))
+
+
+def _auth_page(mode: str, error: str | None, joined: str | None) -> str:
+    signing_in = mode == "in"
+    action, verb = ("/login", "Sign in") if signing_in else ("/signup", "Create account")
+    other = ("<p class=swap>New here? <a href='/signup'>Create an account</a></p>"
+             if signing_in else
+             "<p class=swap>Already have one? <a href='/login'>Sign in</a></p>")
+    banner = f"<p class=warn>{html.escape(error)}</p>" if error else ""
+    if joined:
+        banner += "<p class=good>Account created. Sign in to continue.</p>"
+    return _page(
+        f"<div class=auth><h1>Sawit</h1>"
+        f"<p class=tag>Reels, in words you can search.</p>{banner}"
+        f"<form method=post action='{action}'>"
+        f"<input name=email type=email required placeholder='Email' autocomplete=email"
+        f" autocapitalize=off autocorrect=off spellcheck=false>"
+        f"<input name=password type=password required placeholder='Password'"
+        f" autocomplete='{'current' if signing_in else 'new'}-password'>"
+        f"<button>{verb}</button></form>{other}</div>"
+    )
 
 
 @app.get("/healthz")
@@ -821,6 +995,21 @@ body{{padding-bottom:calc(4.9rem + env(safe-area-inset-bottom))}}
   background:var(--tint-soft);font-size:.875rem;font-weight:510;
 }}
 .filtered a{{color:var(--tint);font-weight:600}}
+
+.auth{{max-width:22rem;margin:0 auto;padding:14dvh 0 4rem;text-align:center}}
+.auth h1{{font-size:2.25rem;letter-spacing:-.03em;margin:0 0 .2rem}}
+.auth .tag{{color:var(--faint);font-size:.9375rem;margin:0 0 2rem}}
+.auth form{{display:flex;flex-direction:column;gap:.6rem;text-align:left}}
+.auth button{{margin-top:.35rem}}
+.swap{{margin:1.5rem 0 0;color:var(--faint);font-size:.9375rem}}
+.swap a{{color:var(--tint);font-weight:590}}
+.warn,.good{{padding:.65rem .85rem;border-radius:.7rem;font-size:.9375rem;
+  margin:0 0 1.1rem;text-align:left}}
+.warn{{background:var(--failed-bg);color:var(--failed)}}
+.good{{background:var(--tint-soft);color:var(--tint)}}
+.keybox{{background:var(--surface);border:1px solid var(--line);border-radius:.7rem;
+  padding:.85rem 1rem;font-size:.8125rem;overflow-x:auto;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}}
 
 input{{
   width:100%;min-height:44px;padding:.6rem .85rem;font:inherit;font-size:1.0625rem;

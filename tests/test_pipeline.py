@@ -9,7 +9,7 @@ import pytest
 from app import instagram
 from app.pipeline import Source, _deliver, _deliver_failure
 
-from .conftest import make_note
+from .conftest import bound_store, make_note
 
 
 @pytest.fixture
@@ -35,9 +35,8 @@ def test_a_silent_reel_is_still_a_note(settings, spy, tmp_path, monkeypatch):
     video-only stream Instagram hands a datacenter IP. The frames carry it."""
     from app import pipeline
     from app.media import Media
-    from app.store import Store
 
-    store = Store(str(tmp_path / "notes.sqlite3"))
+    store = bound_store(str(tmp_path / "notes.sqlite3"))
     note_id = store.create_pending("https://x.test/r")
     seen: dict = {}
 
@@ -121,9 +120,8 @@ def test_an_image_post_is_written_from_its_caption(settings, spy, tmp_path, monk
     and its caption is where the content actually lives."""
     from app import pipeline
     from app.media import Media
-    from app.store import Store
 
-    store = Store(str(tmp_path / "notes.sqlite3"))
+    store = bound_store(str(tmp_path / "notes.sqlite3"))
     note_id = store.create_pending("https://x.test/p")
     seen: dict = {}
     caption = ("Only got one day in Acadia? Do this. This route hits the highlights "

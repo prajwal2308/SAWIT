@@ -1,10 +1,9 @@
-from app.store import Store
 
-from .conftest import make_note
+from .conftest import bound_store, make_note
 
 
 def test_pending_note_is_created_then_completed(settings):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     note_id = store.create_pending("https://example.com/reel/1")
 
     assert store.get(note_id)["status"] == "pending"
@@ -20,7 +19,7 @@ def test_pending_note_is_created_then_completed(settings):
 
 
 def test_failed_note_records_the_error(settings):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     note_id = store.create_pending("https://example.com/reel/2")
     store.mark_failed(note_id, "login required")
 
@@ -30,7 +29,7 @@ def test_failed_note_records_the_error(settings):
 
 
 def test_search_matches_transcript_and_steps(settings):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     for index, note in enumerate(
         [make_note(), make_note(title="Kyoto in November", category="travel", tags=["japan"])]
     ):
@@ -45,7 +44,7 @@ def test_search_matches_transcript_and_steps(settings):
 
 
 def test_search_does_not_choke_on_fts_syntax(settings):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     note_id = store.create_pending("https://example.com/reel/3")
     store.save_note(note_id, make_note(), transcript="anything")
 
@@ -58,7 +57,7 @@ def test_search_does_not_choke_on_fts_syntax(settings):
 
 
 def test_reprocessing_does_not_duplicate_search_hits(settings):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     note_id = store.create_pending("https://example.com/reel/4")
     store.save_note(note_id, make_note(), transcript="first pass")
     store.save_note(note_id, make_note(), transcript="second pass")
@@ -67,7 +66,7 @@ def test_reprocessing_does_not_duplicate_search_hits(settings):
 
 
 def test_recent_is_newest_first(settings):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     ids = [store.create_pending(f"https://example.com/reel/{i}") for i in range(3)]
     for note_id in ids:
         store.save_note(note_id, make_note(), transcript="x")
@@ -88,7 +87,7 @@ def stock_the_store(store) -> None:
 
 
 def test_recent_filters_by_category(settings):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     stock_the_store(store)
 
     assert len(store.recent()) == 4
@@ -98,7 +97,7 @@ def test_recent_filters_by_category(settings):
 
 
 def test_search_and_category_narrow_together(settings):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     stock_the_store(store)
 
     # The transcript is shared, so search alone matches everything.
@@ -111,14 +110,14 @@ def test_search_and_category_narrow_together(settings):
 
 
 def test_category_counts_are_biggest_first(settings):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     stock_the_store(store)
 
     assert store.category_counts() == [("finance", 2), ("food", 1), ("travel", 1)]
 
 
 def test_pending_notes_have_no_category_to_count(settings):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     store.create_pending("https://example.com/reel/pending")
 
     assert store.category_counts() == []
@@ -127,14 +126,14 @@ def test_pending_notes_have_no_category_to_count(settings):
 
 
 def test_a_category_filter_cannot_be_injected(settings):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     stock_the_store(store)
 
     assert store.recent(category="finance' OR '1'='1") == []
 
 
 def test_a_restart_does_not_leave_notes_stuck_working(settings):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     orphan = store.create_pending("https://example.com/reel/interrupted")
     done = store.create_pending("https://example.com/reel/done")
     store.save_note(done, make_note(), transcript="finished")
@@ -148,14 +147,14 @@ def test_a_restart_does_not_leave_notes_stuck_working(settings):
 
 
 def test_recovery_is_a_no_op_when_nothing_was_in_flight(settings):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     store.save_note(store.create_pending("https://x.test/r"), make_note(), transcript="t")
 
     assert store.recover_orphans() == 0
 
 
 def test_a_failed_note_can_be_reset_for_another_run(settings):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     note_id = store.create_pending("https://x.test/r")
     store.mark_failed(note_id, "login required")
 
@@ -168,7 +167,7 @@ def test_a_failed_note_can_be_reset_for_another_run(settings):
 
 
 def test_deleting_a_note_also_drops_it_from_search(settings):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     note_id = store.create_pending("https://x.test/r")
     store.save_note(note_id, make_note(), transcript="fifty thirty twenty")
     assert len(store.search("budget")) == 1
@@ -181,7 +180,7 @@ def test_deleting_a_note_also_drops_it_from_search(settings):
 
 
 def test_status_counts_cover_every_state(settings):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     store.save_note(store.create_pending("https://x.test/1"), make_note(), transcript="t")
     store.mark_failed(store.create_pending("https://x.test/2"), "boom")
     store.create_pending("https://x.test/3")

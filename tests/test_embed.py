@@ -6,9 +6,8 @@ import math
 from dataclasses import replace
 
 from app import embed as embed_mod
-from app.store import Store
 
-from .conftest import make_note
+from .conftest import bound_store, make_note
 
 
 def _stub(monkeypatch, vectors: dict[str, list[float]]):
@@ -41,7 +40,7 @@ def test_the_transcript_stays_out_of_the_vector():
 
 def test_a_note_gets_a_vector_when_it_is_written(settings, tmp_path, monkeypatch):
     settings = replace(settings, embed_model="a-model")
-    store = Store(str(tmp_path / "n.sqlite3"))
+    store = bound_store(str(tmp_path / "n.sqlite3"))
     note_id = store.create_pending("https://x.test/r")
     store.save_note(note_id, make_note(), transcript="t")
     note = store.get(note_id)
@@ -55,7 +54,7 @@ def test_a_note_gets_a_vector_when_it_is_written(settings, tmp_path, monkeypatch
 def test_an_embedding_failure_does_not_lose_the_note(settings, tmp_path, monkeypatch):
     """Search degrades for one note. Nothing else may break."""
     settings = replace(settings, embed_model="a-model")
-    store = Store(str(tmp_path / "n.sqlite3"))
+    store = bound_store(str(tmp_path / "n.sqlite3"))
     note_id = store.create_pending("https://x.test/r")
     store.save_note(note_id, make_note(), transcript="t")
 
@@ -70,7 +69,7 @@ def test_an_embedding_failure_does_not_lose_the_note(settings, tmp_path, monkeyp
 
 def test_ranking_puts_the_closest_note_first(settings, tmp_path, monkeypatch):
     settings = replace(settings, embed_model="a-model")
-    store = Store(str(tmp_path / "n.sqlite3"))
+    store = bound_store(str(tmp_path / "n.sqlite3"))
     ids = {}
     for name, vec in (("near", [1.0, 0.0]), ("far", [0.0, 1.0])):
         nid = store.create_pending(f"https://x.test/{name}")
@@ -88,7 +87,7 @@ def test_nothing_close_enough_returns_nothing(settings, tmp_path, monkeypatch):
     """Without a floor the nearest note is always returned, however unrelated,
     and a search for something you never saved comes back confidently wrong."""
     settings = replace(settings, embed_model="a-model")
-    store = Store(str(tmp_path / "n.sqlite3"))
+    store = bound_store(str(tmp_path / "n.sqlite3"))
     nid = store.create_pending("https://x.test/r")
     store.save_note(nid, make_note(), transcript="t")
     store.set_embedding(nid, embed_mod.to_blob([1.0, 0.0]))
@@ -99,14 +98,14 @@ def test_nothing_close_enough_returns_nothing(settings, tmp_path, monkeypatch):
 
 def test_with_no_model_configured_it_stays_out_of_the_way(settings, tmp_path):
     """embed_model empty means the service behaves exactly as it did before."""
-    store = Store(str(tmp_path / "n.sqlite3"))
+    store = bound_store(str(tmp_path / "n.sqlite3"))
     assert embed_mod.rank("anything", settings, store) == []
     assert embed_mod.embed_note({"id": "x", "title": "t"}, settings, store) is False
 
 
 def test_vectors_never_reach_a_json_response(tmp_path):
     """SELECT * would carry the blob into /api/notes and fail to serialise."""
-    store = Store(str(tmp_path / "n.sqlite3"))
+    store = bound_store(str(tmp_path / "n.sqlite3"))
     note_id = store.create_pending("https://x.test/r")
     store.save_note(note_id, make_note(), transcript="t")
     store.set_embedding(note_id, embed_mod.to_blob([1.0, 0.0]))

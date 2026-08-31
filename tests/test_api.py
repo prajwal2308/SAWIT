@@ -4,17 +4,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import get_settings
-from app.main import KEY_COOKIE, app, get_store
+from app.main import KEY_COOKIE, app, base_store, get_store
 from app.store import Store
 
-from .conftest import API_KEY, IG_VERIFY_TOKEN, make_note
+from .conftest import API_KEY, IG_VERIFY_TOKEN, bound_store, make_note
 from .test_instagram import sign, webhook_body
 
 
 @pytest.fixture
 def client(settings, monkeypatch):
-    store = Store(settings.db_path)
+    store = bound_store(settings.db_path)
     started: list[tuple[str, object]] = []
+    # current_user resolves the account against the unbound store, so the test
+    # database has to be what it looks in.
+    app.dependency_overrides[base_store] = lambda: Store(settings.db_path)
 
     # The real pipeline downloads and transcribes; record the call instead.
     monkeypatch.setattr(

@@ -1,7 +1,9 @@
 import pytest
 
+from app import accounts
 from app.config import Settings
 from app.schemas import KeyFact, ReelNote
+from app.store import Store
 
 API_KEY = "test-key-not-a-real-secret"
 IG_APP_SECRET = "test-app-secret"
@@ -54,3 +56,25 @@ def make_note(**overrides) -> ReelNote:
     )
     data.update(overrides)
     return ReelNote(**data)
+
+
+TEST_EMAIL = "owner@test"
+TEST_PASSWORD = "correct-horse-battery"
+
+
+def bound_store(path: str, email: str = TEST_EMAIL, api_key: str = API_KEY) -> Store:
+    """A Store bound to a fresh account.
+
+    Notes are per-account now, so a Store has to be told whose notes it is
+    looking at before it will answer at all — see tests/test_isolation.py.
+    """
+    base = Store(path)
+    user_id = base.create_user(email, accounts.hash_password(TEST_PASSWORD), api_key)
+    if user_id is None:                       # the account already exists
+        user_id = base.user_by_email(email)["id"]
+    return base.for_user(user_id)
+
+
+@pytest.fixture
+def store(settings) -> Store:
+    return bound_store(settings.db_path)
