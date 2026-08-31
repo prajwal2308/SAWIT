@@ -30,6 +30,31 @@ def spy(monkeypatch):
     return calls
 
 
+def test_a_silent_reel_is_still_a_note(settings, spy, tmp_path, monkeypatch):
+    """No audio track is ordinary — a caption over stripped music, or the
+    video-only stream Instagram hands a datacenter IP. The frames carry it."""
+    from app import pipeline
+    from app.media import Media
+    from app.store import Store
+
+    store = Store(str(tmp_path / "notes.sqlite3"))
+    note_id = store.create_pending("https://x.test/r")
+    seen: dict = {}
+
+    monkeypatch.setattr(pipeline.media_mod, "fetch", lambda *a, **k: Media(
+        audio_path=None, frames=[b"jpeg-bytes"], title="T", duration=8.0))
+    monkeypatch.setattr(pipeline.transcribe, "transcribe", lambda *a, **k: pytest.fail(
+        "transcribe must not run when there is no audio track"))
+    monkeypatch.setattr(pipeline.extract_mod, "extract",
+                        lambda **kw: seen.update(kw) or make_note())
+
+    pipeline.process(note_id, Source(page_url="https://x.test/r"), settings, store)
+
+    assert seen["transcript"] == ""
+    assert seen["frames"] == [b"jpeg-bytes"]
+    assert store.get(note_id)["status"] == "ready"
+
+
 def test_a_dm_share_is_answered_in_the_thread(settings, spy):
     settings = replace(settings, ntfy_topic="a-topic", public_base_url="https://notes.test")
     source = Source(page_url="instagram-dm:mid.1", media_url="https://cdn/r.mp4",

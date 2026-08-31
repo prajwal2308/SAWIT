@@ -53,14 +53,16 @@ def process(note_id: str, source: Source, settings: Settings, store: Store) -> N
                     max_duration_seconds=settings.max_duration_seconds,
                 )
 
-            text = transcribe.transcribe(
-                item.audio_path,
-                backend=settings.asr_backend,
-                model_size=settings.whisper_model,
-                base_url=settings.asr_base_url,
-                api_key=settings.asr_api_key,
-                hosted_model=settings.asr_model,
-            )
+            text = ""
+            if item.audio_path is not None:
+                text = transcribe.transcribe(
+                    item.audio_path,
+                    backend=settings.asr_backend,
+                    model_size=settings.whisper_model,
+                    base_url=settings.asr_base_url,
+                    api_key=settings.asr_api_key,
+                    hosted_model=settings.asr_model,
+                )
             note = extract_mod.extract(
                 transcript=text,
                 # A text-only model 400s on image blocks; the frames are still

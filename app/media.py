@@ -29,7 +29,9 @@ class MediaError(RuntimeError):
 
 @dataclass
 class Media:
-    audio_path: Path
+    # None when the reel carries no audio track at all — silent, or a
+    # video-only stream. The frames still stand on their own.
+    audio_path: Path | None
     frames: list[bytes] = field(default_factory=list)
     title: str | None = None
     description: str | None = None
@@ -81,13 +83,19 @@ def _render(video_path: Path, workdir: Path, info: dict, frame_count: int,
             f"Reel is {duration:.0f}s, longer than the {max_duration_seconds}s limit."
         )
 
-    audio_path = workdir / "audio.wav"
-    _run(
-        # 16 kHz mono is what Whisper wants; anything richer is thrown away.
-        ["ffmpeg", "-nostdin", "-y", "-i", str(video_path),
-         "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", str(audio_path)],
-        "extract audio",
-    )
+    # Plenty of reels are silent — a caption over music the platform stripped,
+    # or a video-only stream, which is what Instagram tends to hand a datacenter
+    # IP. There is nothing to transcribe then, and that is not a failure: the
+    # frames still carry the whole note.
+    audio_path: Path | None = None
+    if _has_audio_stream(video_path):
+        audio_path = workdir / "audio.wav"
+        _run(
+            # 16 kHz mono is what Whisper wants; anything richer is thrown away.
+            ["ffmpeg", "-nostdin", "-y", "-i", str(video_path),
+             "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", str(audio_path)],
+            "extract audio",
+        )
 
     return Media(
         audio_path=audio_path,
@@ -97,6 +105,17 @@ def _render(video_path: Path, workdir: Path, info: dict, frame_count: int,
         uploader=info.get("uploader") or info.get("channel"),
         duration=duration,
     )
+
+
+def _has_audio_stream(video_path: Path) -> bool:
+    """Ask before extracting: ffmpeg's failure here is indistinguishable from a
+    real error, and a silent reel is not one."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a",
+         "-show_entries", "stream=index", "-of", "csv=p=0", str(video_path)],
+        capture_output=True, text=True,
+    )
+    return bool(result.stdout.strip())
 
 
 def _probe_duration(video_path: Path) -> float | None:

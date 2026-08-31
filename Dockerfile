@@ -11,7 +11,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 ENV SAWIT_DB=/data/sawit.sqlite3
-VOLUME ["/data"]
+# No VOLUME directive: it is only a hint here — Fly mounts through fly.toml's
+# [mounts] and Railway rejects the instruction outright in favour of its own
+# volumes. Both still land the database on a real disk at /data.
 EXPOSE 8000
 
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
