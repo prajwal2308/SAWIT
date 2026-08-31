@@ -161,3 +161,36 @@ def test_your_key_is_yours_and_reaches_only_your_notes(web, settings):
 
 def test_a_key_that_matches_no_account_is_refused(web):
     assert web.get("/api/notes", headers={"X-API-Key": "not-anybodys-key"}).status_code == 401
+
+
+def test_the_bootstrapped_account_can_claim_itself(web, settings):
+    """It holds the notes but has no password, so without this its library is
+    reachable only through a URL with a key in it."""
+    bootstrap_owner(web.store, settings)
+    owner = web.store.user_by_api_key(settings.api_key)
+    note = web.store.for_user(owner["id"]).create_pending("https://x.test/mine")
+    web.store.for_user(owner["id"]).save_note(note, make_note(title="Mine"), transcript="t")
+
+    response = web.post("/account/credentials",
+                        data={"email": "me@test.com", "password": PASSWORD},
+                        headers={"X-API-Key": API_KEY}, follow_redirects=False)
+    assert response.status_code == 303
+
+    web.cookies.clear()
+    web.post("/login", data={"email": "me@test.com", "password": PASSWORD})
+
+    # Same account, same notes — not a new empty one.
+    assert [n["title"] for n in web.get("/api/notes").json()] == ["Mine"]
+    assert web.store.user_count() == 1
+
+
+def test_claiming_cannot_steal_an_email_in_use(web, settings):
+    bootstrap_owner(web.store, settings)
+    web.post("/signup", data={"email": "taken@test.com", "password": PASSWORD})
+    web.cookies.clear()
+
+    response = web.post("/account/credentials",
+                        data={"email": "taken@test.com", "password": PASSWORD},
+                        headers={"X-API-Key": API_KEY}, follow_redirects=False)
+
+    assert "another+account" in response.headers["location"]

@@ -245,18 +245,71 @@ def logout() -> Response:
 
 
 @app.get("/account", response_class=HTMLResponse, dependencies=[Depends(require_key)])
-def account_page(user: dict[str, Any] = Depends(current_user)) -> HTMLResponse:
-    """Where the Shortcut's key lives — one per account, not one per server."""
+def account_page(
+    error: str | None = None,
+    saved: str | None = None,
+    user: dict[str, Any] = Depends(current_user),
+) -> HTMLResponse:
+    """The key the Shortcut sends, and a way in that is not a URL with a key in it."""
+    unclaimed = user["email"] == OWNER_EMAIL
+    whoami = "No sign-in set yet" if unclaimed else html.escape(user["email"])
+    banner = f"<p class=warn>{html.escape(error)}</p>" if error else ""
+    if saved:
+        banner += "<p class=good>Saved. You can sign in with that from now on.</p>"
+
+    claim = (
+        "<h2>" + ("Set a password" if unclaimed else "Change your sign-in") + "</h2>"
+        + ("<p class=lede>This account holds your notes but has no password yet, so "
+           "the only way in is a link with the key in it. Give it an email and "
+           "password and you can sign in normally.</p>" if unclaimed else "")
+        + "<form method=post action='/account/credentials' class=auth-form>"
+        f"<input name=email type=email required placeholder='Email' autocomplete=email"
+        f" autocapitalize=off autocorrect=off spellcheck=false"
+        f" value=\"{'' if unclaimed else html.escape(user['email'], quote=True)}\">"
+        "<input name=password type=password required placeholder='New password'"
+        " autocomplete=new-password>"
+        "<button>Save</button></form>"
+    )
+
     return HTMLResponse(_page(
         "<a class=back href='/'>&lsaquo; All notes</a>"
-        f"<h1>Account</h1><p class=note-meta>{html.escape(user['email'])}</p>"
+        f"<h1>Account</h1>"
+        f"<p class=note-meta>{whoami}</p>"
+        f"{banner}"
         "<h2>Your key</h2>"
         "<p class=lede>The Shortcut sends this as <code>X-API-Key</code>. "
         "It opens your notes and nobody else's — treat it like a password.</p>"
         f"<pre class=keybox>{html.escape(user['api_key'])}</pre>"
+        f"{claim}"
         "<form method=post action='/logout' class=actions>"
         "<button class=danger>Sign out</button></form>"
     ))
+
+
+@app.post("/account/credentials", dependencies=[Depends(require_key)])
+def set_credentials(
+    email: str = Form(...),
+    password: str = Form(...),
+    user: dict[str, Any] = Depends(current_user),
+    settings: Settings = Depends(get_settings),
+    store: Store = Depends(base_store),
+) -> Response:
+    """Claim the account you are already authenticated as.
+
+    The account bootstrapped from SAWIT_API_KEY holds the notes but has no
+    password, so this is how its owner gets a way in that is not a URL with a
+    key in it. Signing up fresh instead would leave the library behind.
+    """
+    email = accounts.normalise_email(email)
+    if "@" not in email:
+        return _redirect("/account?error=That+is+not+an+email+address.")
+    try:
+        accounts.check_password_strength(password)
+    except accounts.AuthError as exc:
+        return _redirect(f"/account?error={quote_plus(str(exc))}")
+    if not store.set_credentials(user["id"], email, accounts.hash_password(password)):
+        return _redirect("/account?error=That+email+belongs+to+another+account.")
+    return _with_session(_redirect("/account?saved=1"), user["id"], settings)
 
 
 def _redirect(path: str) -> RedirectResponse:
@@ -999,7 +1052,8 @@ body{{padding-bottom:calc(4.9rem + env(safe-area-inset-bottom))}}
 .auth{{max-width:22rem;margin:0 auto;padding:14dvh 0 4rem;text-align:center}}
 .auth h1{{font-size:2.25rem;letter-spacing:-.03em;margin:0 0 .2rem}}
 .auth .tag{{color:var(--faint);font-size:.9375rem;margin:0 0 2rem}}
-.auth form{{display:flex;flex-direction:column;gap:.6rem;text-align:left}}
+.auth form,.auth-form{{display:flex;flex-direction:column;gap:.6rem;text-align:left}}
+.auth-form{{max-width:22rem;margin-top:.6rem}}
 .auth button{{margin-top:.35rem}}
 .swap{{margin:1.5rem 0 0;color:var(--faint);font-size:.9375rem}}
 .swap a{{color:var(--tint);font-weight:590}}

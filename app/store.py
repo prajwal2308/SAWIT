@@ -172,6 +172,24 @@ class Store:
         with self._conn() as conn:
             return conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
 
+    def set_credentials(self, user_id: str, email: str, password_hash: str) -> bool:
+        """Give an account an email and password it can sign in with.
+
+        The account bootstrapped from SAWIT_API_KEY owns the notes but has a
+        random password nobody knows, so without this its library is reachable
+        only by key — and signing up properly would strand it. False when the
+        email belongs to someone else.
+        """
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE users SET email=?, password_hash=? WHERE id=?",
+                    (email, password_hash, user_id),
+                )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
     def adopt_orphan_notes(self, user_id: str) -> int:
         """Hand notes written before accounts existed to their owner.
 
