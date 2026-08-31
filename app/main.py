@@ -350,6 +350,7 @@ def index(
     q: str | None = None,
     category: str | None = None,
     k: str | None = None,
+    mode: str | None = None,
     store: Store = Depends(get_store),
 ) -> HTMLResponse:
     if q:
@@ -379,29 +380,83 @@ def index(
     # Omitted entirely once the cookie carries it: a hidden field with an empty
     # value still puts a bare `k=` on every search you run.
     key_field = f'<input type=hidden name=k value="{key}">' if key else ""
+    esc_q = html.escape(q or "", quote=True)
+    # Clearing the box has to clear the whole filter. The category used to ride
+    # along in a hidden field, so emptying the search you could see left you
+    # still filtered by something you could not.
+    reset = (f"<a class=clear href='/{_qs(k=link_key)}' aria-label='Clear search'>&times;</a>"
+             if (q or category) else "")
+
+    if mode == "search":
+        drawer = (
+            f"<form method=get class='drawer find'>{key_field}"
+            f"<span class=mag aria-hidden=true></span>"
+            f"<input name=q value=\"{esc_q}\" type=search autofocus enterkeyhint=search"
+            f" placeholder='Search everything you saved' autocomplete=off>"
+            f"{reset}</form>"
+        )
+    elif mode == "add":
+        drawer = (
+            f"<form method=post class='drawer add' "
+            f"action=\"/add{html.escape(_qs(k=link_key), quote=True)}\">"
+            f"<input name=url type=url required autofocus placeholder='Paste a reel link'"
+            f" autocomplete=off autocapitalize=off autocorrect=off spellcheck=false>"
+            f"<button>Save</button></form>"
+        )
+    else:
+        drawer = ""
+
     return HTMLResponse(_page(
-        f"""<div class=bar>
-              <div class=brand><span class=wordmark>Sawit</span>
-                <span class=tagline>Reels, in words you can search</span></div>
-              <form method=post action="/add{html.escape(_qs(k=link_key), quote=True)}"
-                    class=add>
-                <input name=url type=url required
-                       placeholder="Paste a reel link" autocomplete=off
-                       autocapitalize=off autocorrect=off spellcheck=false>
-                <button>Save</button>
-              </form>
-              <form method=get>
-                {key_field}
-                <input type=hidden name=category value="{html.escape(category or '', quote=True)}">
-                <input name=q value="{html.escape(q or '', quote=True)}" type=search
-                       placeholder="Search everything you saved" autocomplete=off
-                       style="margin-top:.5rem">
-              </form>
-              {chips}
-            </div>
+        f"""<header class=top><span class=wordmark>Sawit</span></header>
+            {_searching_note(q, category, link_key)}
+            {chips}
             {browse}
-            {rows}"""
+            {rows}
+            {drawer}
+            {_tabs(link_key, mode, q, category)}"""
     ))
+
+
+def _searching_note(q: str | None, category: str | None, key: str) -> str:
+    """Say what is being filtered, since the box that did it may be closed."""
+    if not q and not category:
+        return ""
+    bits = []
+    if q:
+        bits.append(f"&ldquo;{html.escape(q)}&rdquo;")
+    if category:
+        bits.append(html.escape(category))
+    return (f"<div class=filtered><span>Showing {' in '.join(bits)}</span>"
+            f"<a href='/{_qs(k=key)}'>Clear</a></div>")
+
+
+def _tabs(key: str, mode: str | None, q: str | None, category: str | None) -> str:
+    """The controls live where the thumb is, not stacked above the content."""
+    grid_i = ("<svg viewBox='0 0 24 24' aria-hidden=true><rect x='3' y='3' width='7.5' "
+              "height='7.5' rx='2'/><rect x='13.5' y='3' width='7.5' height='7.5' rx='2'/>"
+              "<rect x='3' y='13.5' width='7.5' height='7.5' rx='2'/>"
+              "<rect x='13.5' y='13.5' width='7.5' height='7.5' rx='2'/></svg>")
+    feed_i = ("<svg viewBox='0 0 24 24' aria-hidden=true><rect x='3' y='3' width='18' "
+              "height='18' rx='4.5'/><path d='M10 8.5l6 3.5-6 3.5z'/></svg>")
+    find_i = ("<svg viewBox='0 0 24 24' aria-hidden=true><circle cx='11' cy='11' r='7'/>"
+              "<path d='M16.5 16.5L21 21'/></svg>")
+    add_i = ("<svg viewBox='0 0 24 24' aria-hidden=true><rect x='3' y='3' width='18' "
+             "height='18' rx='5'/><path d='M12 8v8M8 12h8'/></svg>")
+
+    def tab(href: str, icon: str, label: str, on: bool) -> str:
+        return (f"<a class='tab{' on' if on else ''}' href='{html.escape(href, quote=True)}'>"
+                f"{icon}<span>{label}</span></a>")
+
+    keeping = _qs(k=key, q=q, category=category)
+    return (
+        "<nav class=tabs>"
+        + tab(f"/{_qs(k=key)}", grid_i, "Notes", mode is None and not q)
+        + tab(f"/feed{_qs(k=key, category=category)}", feed_i, "Feed", False)
+        + tab(f"/{keeping}{'&' if keeping else '?'}mode=search", find_i, "Search",
+              mode == "search")
+        + tab(f"/{_qs(k=key)}{'?' if not key else '&'}mode=add", add_i, "Add", mode == "add")
+        + "</nav>"
+    )
 
 
 def _category_chips(
@@ -648,17 +703,76 @@ a{{color:inherit;text-decoration:none}}
 ul{{margin:.2rem 0;padding-left:1.15rem}} li{{margin:.35rem 0}}
 
 /* Chrome floats; content scrolls beneath it. */
-.bar{{
-  position:sticky;top:0;z-index:10;
+.top{{
+  position:sticky;top:0;z-index:10;display:flex;justify-content:center;
   margin:0 calc(-1 * max(1rem,env(safe-area-inset-left)));
-  padding:max(.6rem,env(safe-area-inset-top)) max(1rem,env(safe-area-inset-left)) .55rem;
+  padding:calc(.55rem + env(safe-area-inset-top)) 1rem .55rem;
   background:var(--chrome);
   -webkit-backdrop-filter:saturate(180%) blur(20px);
   backdrop-filter:saturate(180%) blur(20px);
 }}
-/* A fade where content meets floating chrome, not a hard rule. */
-.bar::after{{content:"";position:absolute;left:0;right:0;bottom:-12px;height:12px;
+.top::after{{content:"";position:absolute;left:0;right:0;bottom:-14px;height:14px;
   background:linear-gradient(var(--chrome),transparent);pointer-events:none}}
+
+/* Controls sit where the thumb is. */
+.tabs{{
+  position:fixed;left:0;right:0;bottom:0;z-index:20;
+  display:grid;grid-template-columns:repeat(4,1fr);
+  padding:.35rem .4rem calc(.3rem + env(safe-area-inset-bottom));
+  background:var(--chrome);
+  -webkit-backdrop-filter:saturate(180%) blur(22px);
+  backdrop-filter:saturate(180%) blur(22px);
+  box-shadow:0 -.5px 0 var(--line);
+}}
+.tab{{
+  display:flex;flex-direction:column;align-items:center;gap:.12rem;
+  padding:.4rem 0 .3rem;color:var(--faint);
+  font-size:.625rem;font-weight:600;letter-spacing:.01em;
+  transition:transform .12s cubic-bezier(.2,.8,.3,1),color .15s ease-out;
+}}
+.tab:active{{transform:scale(.9)}}
+.tab.on{{color:var(--fg)}}
+.tab svg{{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.7;
+  stroke-linecap:round;stroke-linejoin:round}}
+.tab.on svg rect:first-child{{fill:currentColor;stroke:currentColor}}
+/* The tab bar floats over the list, so the last row needs room to clear it. */
+body{{padding-bottom:calc(4.9rem + env(safe-area-inset-bottom))}}
+
+/* The field the tab opened, docked above the bar it came from. */
+.drawer{{
+  position:fixed;left:0;right:0;z-index:19;
+  bottom:calc(4.25rem + env(safe-area-inset-bottom));
+  display:flex;align-items:center;gap:.5rem;
+  padding:.55rem .75rem;
+  background:var(--chrome);
+  -webkit-backdrop-filter:saturate(180%) blur(22px);
+  backdrop-filter:saturate(180%) blur(22px);
+  box-shadow:0 -.5px 0 var(--line);
+}}
+.drawer input{{flex:1;min-width:0}}
+.find{{position:relative}}
+.find input{{padding-left:2.2rem;background:var(--press);border-color:transparent;
+  border-radius:.65rem}}
+.find input::-webkit-search-cancel-button{{display:none}}
+.mag{{
+  position:absolute;left:1.45rem;top:50%;width:14px;height:14px;
+  margin-top:-9px;border:2px solid var(--faint);border-radius:50%;pointer-events:none;
+}}
+.mag::after{{content:"";position:absolute;right:-5px;bottom:-4px;width:7px;height:2px;
+  background:var(--faint);transform:rotate(45deg);border-radius:2px}}
+.clear{{
+  flex:none;display:grid;place-items:center;width:44px;height:44px;
+  color:var(--faint);font-size:1.5rem;line-height:1;
+}}
+.clear:active{{opacity:.5}}
+
+/* What is being filtered, said plainly — the box that did it may be closed. */
+.filtered{{
+  display:flex;align-items:center;justify-content:space-between;gap:1rem;
+  padding:.55rem .8rem;margin:.7rem 0 0;border-radius:.7rem;
+  background:var(--tint-soft);font-size:.875rem;font-weight:510;
+}}
+.filtered a{{color:var(--tint);font-weight:600}}
 
 input{{
   width:100%;min-height:44px;padding:.6rem .85rem;font:inherit;font-size:1.0625rem;
@@ -686,11 +800,9 @@ button.quiet{{background:var(--tint-soft);color:var(--tint)}}
 .add button{{flex:none}}
 .add input{{margin:0}}
 
-.brand{{display:flex;align-items:baseline;gap:.5rem;padding:.1rem 0 .65rem}}
-.wordmark{{font-size:1.375rem;font-weight:700;letter-spacing:-.028em}}
-.tagline{{font-size:.75rem;font-weight:510;letter-spacing:-.004em;color:var(--faint)}}
+.wordmark{{font-size:1.1875rem;font-weight:700;letter-spacing:-.028em}}
 
-.chips{{display:flex;gap:.45rem;overflow-x:auto;padding:.55rem 0 .15rem;
+.chips{{display:flex;gap:.45rem;overflow-x:auto;padding:.85rem 0 .15rem;
   scrollbar-width:none;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain}}
 .chips::-webkit-scrollbar{{display:none}}
 .chip{{

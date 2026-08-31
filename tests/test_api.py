@@ -149,6 +149,34 @@ def test_the_paste_box_needs_the_key(client):
     assert client.started == []
 
 
+def test_clearing_the_search_really_clears_it(client):
+    """The category used to ride along in a hidden field, so emptying the box
+    you could see left you filtered by something you could not."""
+    for cat in ("finance", "travel"):
+        note_id = client.store.create_pending(f"https://x.test/{cat}")
+        client.store.save_note(note_id, make_note(category=cat, title=f"A {cat} note"),
+                               transcript="t")
+    client.get("/", params={"k": API_KEY})
+
+    narrowed = client.get("/", params={"category": "finance"}).text
+    assert "A travel note" not in narrowed
+    # Nothing may carry the category invisibly out of this page.
+    assert "name=category" not in narrowed
+
+    cleared = client.get("/").text
+    assert "A travel note" in cleared and "A finance note" in cleared
+
+
+def test_the_page_says_what_it_is_filtered_by(client):
+    note_id = client.store.create_pending("https://x.test/r")
+    client.store.save_note(note_id, make_note(), transcript="t")
+    client.get("/", params={"k": API_KEY})
+
+    page = client.get("/", params={"q": "budget", "category": "finance"}).text
+
+    assert "Showing" in page and "budget" in page and "finance" in page
+
+
 def test_the_feed_shows_one_note_per_screen(client):
     note_id = client.store.create_pending("https://x.test/r")
     client.store.save_note(note_id, make_note(), transcript="fifty thirty twenty")
