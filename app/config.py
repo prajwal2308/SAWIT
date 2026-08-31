@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 
+from dotenv import load_dotenv
+
 
 def _flag(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
@@ -73,6 +75,10 @@ DEFAULT_ANTHROPIC_MODEL = "claude-opus-5"
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    # Running locally you keep these in a .env; in a container they are already
+    # in the environment, and a real env var always wins over the file.
+    load_dotenv(override=False)
+
     api_key = os.environ.get("SAWIT_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError(
