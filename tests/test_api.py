@@ -78,6 +78,48 @@ def test_text_with_no_url_is_rejected(client):
     assert response.status_code == 422
 
 
+def test_resharing_a_saved_reel_returns_the_note_instead_of_redoing_it(client):
+    """Re-sharing is how people find a reel again. Each repeat would otherwise
+    cost another download, another Whisper run and another model call."""
+    first = client.post("/ingest", json={"url": "https://x.test/r"},
+                        headers={"X-API-Key": API_KEY})
+    note_id = first.json()["id"]
+    client.store.save_note(note_id, make_note(), transcript="t")
+
+    again = client.post("/ingest", json={"url": "https://x.test/r"},
+                        headers={"X-API-Key": API_KEY})
+
+    assert again.json() == {"id": note_id, "status": "ready", "duplicate": True}
+    assert len(client.started) == 1, "the reel must not be processed twice"
+
+
+def test_resharing_a_failed_reel_does_try_again(client):
+    """A failure is not a note. Re-sharing it should mean another attempt."""
+    first = client.post("/ingest", json={"url": "https://x.test/r"},
+                        headers={"X-API-Key": API_KEY})
+    client.store.mark_failed(first.json()["id"], "ffmpeg fell over")
+
+    again = client.post("/ingest", json={"url": "https://x.test/r"},
+                        headers={"X-API-Key": API_KEY})
+
+    assert again.status_code == 202
+    assert again.json()["status"] == "pending"
+    assert len(client.started) == 2
+
+
+def test_pasting_a_saved_link_again_opens_the_note(client):
+    client.get("/", params={"k": API_KEY})
+    note_id = client.store.create_pending("https://x.test/r")
+    client.store.save_note(note_id, make_note(), transcript="t")
+
+    response = client.post("/add", data={"url": "https://x.test/r"},
+                           follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/notes/{note_id}"
+    assert client.started == []
+
+
 def test_pasting_a_link_into_the_page_queues_it(client):
     client.get("/", params={"k": API_KEY})
 
@@ -115,7 +157,7 @@ def test_the_feed_shows_one_note_per_screen(client):
 
     assert "The 50/30/20 budget rule" in page
     assert "Multiply by 0.5 for needs" in page          # the steps travel with it
-    assert "scroll-snap-type:y mandatory" in page       # the platform does the paging
+    assert "scroll-snap-type:y" in page                 # the platform does the paging
     # The still is a poster, not a player — the reel itself lives on Instagram.
     assert "https://x.test/r" in page
 

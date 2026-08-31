@@ -161,6 +161,9 @@ def ingest(
     store: Store = Depends(get_store),
 ) -> JSONResponse:
     """Accept and return immediately — the share sheet must never wait on us."""
+    existing = store.find_written(payload.url)
+    if existing:
+        return JSONResponse({"id": existing, "status": "ready", "duplicate": True})
     note_id = store.create_pending(payload.url)
     background.add_task(process, note_id, Source(page_url=payload.url), settings, store)
     return JSONResponse({"id": note_id, "status": "pending"}, status_code=202)
@@ -180,6 +183,12 @@ def add_from_page(
         url = IngestRequest(url=url).url
     except ValidationError:
         raise HTTPException(status_code=400, detail="That is not a link.") from None
+    existing = store.find_written(url)
+    if existing:
+        # Re-pasting a link you already saved takes you to the note, rather
+        # than making a second copy of it.
+        return _redirect_or_json(request, k, f"/notes/{existing}",
+                                 {"id": existing, "status": "ready", "duplicate": True})
     note_id = store.create_pending(url)
     background.add_task(process, note_id, Source(page_url=url), settings, store)
     return _redirect_or_json(request, k, f"/notes/{note_id}",
@@ -372,6 +381,8 @@ def index(
     key_field = f'<input type=hidden name=k value="{key}">' if key else ""
     return HTMLResponse(_page(
         f"""<div class=bar>
+              <div class=brand><span class=wordmark>Sawit</span>
+                <span class=tagline>Reels, in words you can search</span></div>
               <form method=post action="/add{html.escape(_qs(k=link_key), quote=True)}"
                     class=add>
                 <input name=url type=url required
@@ -466,12 +477,12 @@ def feed(
         ])
         cards.append(
             f"<article class=reel>"
+            # The title already leads the sheet below; painting it over the still
+            # as well collided with the reel's own on-screen text.
             f"<a class=stage href='{esc(n['url'])}' target=_blank rel=noopener>"
             f"{thumb}"
             f"<span class=play aria-hidden=true></span>"
-            f"<span class=caption>"
-            f"<span class=caption-title>{esc(n['title'])}</span>"
-            f"<span class=caption-hint>Watch on Instagram &rsaquo;</span></span></a>"
+            f"<span class=watch>Watch on Instagram</span></a>"
             f"<div class=sheet>{body}"
             f"<a class=full href='/notes/{note_id}{qs}'>Open the full note &rsaquo;</a>"
             f"</div></article>"
@@ -536,9 +547,11 @@ def note_page(
         section("Key facts", note["key_facts"],
                 lambda f: f"<li><b>{esc(f['label'])}:</b> {esc(f['value'])}</li>"),
         section("Caveats", note["caveats"], lambda c: f"<li>{esc(c)}</li>"),
-        f"<p class=note-meta style='margin-top:1.75rem'>"
-        f"<a href='{esc(note['url'])}'>Open the original reel &rsaquo;</a></p>",
-        f"<details><summary>Transcript</summary><p>{esc(note['transcript'])}</p></details>"
+        f"<a class=row href='{esc(note['url'])}' target=_blank rel=noopener>"
+        f"<span>Open the original reel</span><span class=chev>&rsaquo;</span></a>",
+        f"<details class=row-d><summary><span>Transcript</span>"
+        f"<span class=chev>&rsaquo;</span></summary>"
+        f"<p>{esc(note['transcript'])}</p></details>"
         if note["transcript"] else "",
         _actions(note, key),
     ]
@@ -596,6 +609,7 @@ def _page(body: str, full_bleed: bool = False) -> str:
   --bg:#fbfbfd; --surface:#fff; --fg:#1d1d1f; --dim:#6e6e73; --faint:#8e8e93;
   --line:rgba(0,0,0,.10); --line-strong:rgba(0,0,0,.16);
   --tint:#0071e3;            /* interactive */
+  --tint-soft:rgba(0,113,227,.12);
   --pending:#8e6d00;         /* semantic: still working */
   --pending-bg:rgba(255,196,0,.14);
   --failed:#c7362b;          /* semantic: needs you */
@@ -607,7 +621,7 @@ def _page(body: str, full_bleed: bool = False) -> str:
 @media(prefers-color-scheme:dark){{:root{{
   --bg:#000; --surface:#1c1c1e; --fg:#f5f5f7; --dim:#98989d; --faint:#7c7c80;
   --line:rgba(255,255,255,.13); --line-strong:rgba(255,255,255,.22);
-  --tint:#0a84ff;
+  --tint:#0a84ff; --tint-soft:rgba(10,132,255,.18);
   --pending:#ffd426; --pending-bg:rgba(255,212,38,.14);
   --failed:#ff6961; --failed-bg:rgba(255,105,97,.13);
   --chrome:rgba(0,0,0,.72);
@@ -657,18 +671,24 @@ input:focus{{outline:none;border-color:var(--tint);
   box-shadow:0 0 0 3.5px color-mix(in srgb,var(--tint) 22%,transparent)}}
 :focus-visible{{outline:2px solid var(--tint);outline-offset:2px}}
 
+/* Filled and tinted, the way a system control looks — an outlined box with
+   coloured text reads as a placeholder for a button. */
 button{{
-  font:inherit;font-weight:590;letter-spacing:-.01em;cursor:pointer;
-  border:1px solid var(--line-strong);border-radius:.7rem;
-  background:var(--surface);color:var(--fg);
-  min-height:44px;padding:0 1.05rem;
-  transition:transform .1s ease-out,background-color .1s ease-out;
+  font:inherit;font-weight:600;letter-spacing:-.01em;cursor:pointer;
+  border:none;border-radius:.7rem;
+  background:var(--tint);color:#fff;
+  min-height:44px;padding:0 1.15rem;
+  transition:transform .12s cubic-bezier(.2,.8,.3,1),filter .15s ease-out;
 }}
-/* Feedback belongs on the press, and it is immediate. */
-button:active{{transform:scale(.97);background:var(--press)}}
+button:active{{transform:scale(.96);filter:brightness(.88)}}
+button.quiet{{background:var(--tint-soft);color:var(--tint)}}
 .add{{display:flex;gap:.5rem;align-items:center}}
-.add button{{flex:none;color:var(--tint);border-color:var(--tint)}}
+.add button{{flex:none}}
 .add input{{margin:0}}
+
+.brand{{display:flex;align-items:baseline;gap:.5rem;padding:.1rem 0 .65rem}}
+.wordmark{{font-size:1.375rem;font-weight:700;letter-spacing:-.028em}}
+.tagline{{font-size:.75rem;font-weight:510;letter-spacing:-.004em;color:var(--faint)}}
 
 .chips{{display:flex;gap:.45rem;overflow-x:auto;padding:.55rem 0 .15rem;
   scrollbar-width:none;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain}}
@@ -746,78 +766,98 @@ button:active{{transform:scale(.97);background:var(--press)}}
 .note-meta a{{color:var(--tint)}}
 .lede-lg{{font-size:1.1875rem;line-height:1.4;letter-spacing:-.014em;color:var(--dim);
   margin:0 0 .3rem}}
-details{{margin-top:1.75rem;color:var(--dim);font-size:.9375rem}}
-summary{{cursor:pointer;min-height:44px;display:flex;align-items:center;
-  color:var(--tint);font-weight:510}}
+/* Grouped rows, the way a settings list looks: one surface, hairline between. */
+.row,.row-d>summary{{
+  display:flex;align-items:center;justify-content:space-between;gap:.75rem;
+  min-height:48px;padding:0 1rem;background:var(--surface);
+  border:1px solid var(--line);border-radius:.8rem;
+  font-size:1rem;font-weight:510;letter-spacing:-.01em;color:var(--fg);
+  cursor:pointer;list-style:none;
+  transition:transform .12s cubic-bezier(.2,.8,.3,1),background-color .15s ease-out;
+}}
+.row{{margin-top:.55rem}}
+.row-d{{margin-top:.55rem}}
+.row:active,.row-d>summary:active{{transform:scale(.985);background:var(--press)}}
+.row-d>summary::-webkit-details-marker{{display:none}}
+.chev{{color:var(--faint);font-size:1.2rem;line-height:1}}
+.row-d[open]>summary{{border-radius:.8rem .8rem 0 0;border-bottom-color:transparent}}
+.row-d[open]>summary .chev{{transform:rotate(90deg)}}
+.row-d>p{{margin:0;padding:.9rem 1rem 1rem;background:var(--surface);
+  border:1px solid var(--line);border-top:none;border-radius:0 0 .8rem .8rem;
+  color:var(--dim);font-size:.9375rem;line-height:1.5}}
 
 .actions{{display:flex;gap:.55rem;margin:2.25rem 0 1rem}}
-.actions button.danger{{color:var(--failed);
-  border-color:color-mix(in srgb,var(--failed) 45%,transparent)}}
+.actions button{{background:var(--tint-soft);color:var(--tint)}}
+.actions button.danger{{background:var(--failed-bg);color:var(--failed)}}
 
 /* ---- Feed: one note per screen, in the shape the reel arrived in ---- */
 body.bleed{{padding:0;overflow:hidden}}
 body.bleed .shell{{max-width:none}}
 .feed{{
-  height:100dvh;overflow-y:auto;scroll-snap-type:y mandatory;
-  scroll-behavior:smooth;overscroll-behavior-y:contain;
-  -webkit-overflow-scrolling:touch;scrollbar-width:none;
+  height:100dvh;overflow-y:auto;scroll-snap-type:y proximity;
+  overscroll-behavior-y:contain;-webkit-overflow-scrolling:touch;scrollbar-width:none;
 }}
 .feed::-webkit-scrollbar{{display:none}}
 .feed-back{{position:fixed;top:max(.5rem,env(safe-area-inset-top));left:.85rem;z-index:20;
   padding:0 .8rem;border-radius:999px;color:#fff;
   background:rgba(0,0,0,.42);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}}
+/* One card per screen, but the card grows with its note and the page does all
+   the scrolling. Nesting a scroller inside a snap container was the jank. */
 .reel{{
-  height:100dvh;scroll-snap-align:start;scroll-snap-stop:always;
-  display:grid;grid-template-rows:minmax(0,1fr) auto;
+  min-height:100dvh;scroll-snap-align:start;
+  display:flex;flex-direction:column;gap:.9rem;
+  padding:calc(3.25rem + env(safe-area-inset-top)) .9rem
+          calc(2rem + env(safe-area-inset-bottom));
 }}
-/* The poster sits in its own aspect box, letterboxed against a blurred copy —
-   the alternative on a wide screen is a cropped close-up of somebody's chin. */
-.stage{{position:relative;overflow:hidden;background:#000;display:grid;place-items:center}}
+/* A poster, sized like a poster. It was eating half the screen to show a
+   still nobody needs at that scale. */
+.stage{{
+  position:relative;display:block;flex:none;
+  height:34dvh;min-height:190px;max-height:300px;
+  border-radius:1rem;overflow:hidden;background:#000;
+  border:1px solid var(--line);
+}}
 .stage .blur{{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
-  filter:blur(34px) saturate(140%) brightness(.42);transform:scale(1.2)}}
-.stage .poster{{position:relative;max-width:100%;max-height:100%;
+  filter:blur(30px) saturate(150%) brightness(.45);transform:scale(1.25)}}
+.stage .poster{{position:relative;margin:0 auto;height:100%;width:auto;max-width:100%;
   aspect-ratio:9/16;object-fit:cover;display:block}}
 .play{{
-  position:absolute;top:50%;left:50%;width:62px;height:62px;margin:-31px 0 0 -31px;
-  border-radius:50%;background:rgba(255,255,255,.16);
-  -webkit-backdrop-filter:blur(16px) saturate(180%);backdrop-filter:blur(16px) saturate(180%);
-  border:1px solid rgba(255,255,255,.3);z-index:2;
-  transition:transform .1s ease-out,background-color .15s ease-out;
+  position:absolute;top:50%;left:50%;width:54px;height:54px;margin:-27px 0 0 -27px;
+  border-radius:50%;background:rgba(255,255,255,.18);
+  -webkit-backdrop-filter:blur(18px) saturate(180%);backdrop-filter:blur(18px) saturate(180%);
+  border:.5px solid rgba(255,255,255,.45);z-index:2;
+  box-shadow:0 2px 14px rgba(0,0,0,.3);
+  transition:transform .12s ease-out,background-color .15s ease-out;
 }}
-.play::before{{content:"";position:absolute;top:50%;left:54%;transform:translate(-50%,-50%);
-  border-style:solid;border-width:9px 0 9px 15px;
+.play::before{{content:"";position:absolute;top:50%;left:55%;transform:translate(-50%,-50%);
+  border-style:solid;border-width:8px 0 8px 13px;
   border-color:transparent transparent transparent #fff}}
-.stage:active .play{{transform:scale(.92);background:rgba(255,255,255,.28)}}
-.caption{{
-  position:absolute;left:0;right:0;bottom:0;z-index:2;
-  display:flex;flex-direction:column;gap:.2rem;
-  padding:3rem 1.15rem 1rem;
-  background:linear-gradient(transparent,rgba(0,0,0,.72));
+.stage:active .play{{transform:scale(.9);background:rgba(255,255,255,.3)}}
+/* A capsule that reads as a control, not a caption stranded on the artwork. */
+.watch{{
+  position:absolute;right:.55rem;bottom:.55rem;z-index:2;
+  padding:.3rem .7rem;border-radius:999px;
+  font-size:.75rem;font-weight:600;letter-spacing:-.003em;color:#fff;
+  background:rgba(0,0,0,.5);
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+  border:.5px solid rgba(255,255,255,.22);
 }}
-.caption-title{{color:#fff;font-size:1.0625rem;line-height:1.25;letter-spacing:-.016em;
-  font-weight:640;text-shadow:0 1px 6px rgba(0,0,0,.55);
-  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}}
-.caption-hint{{color:rgba(255,255,255,.72);font-size:.8125rem;font-weight:560;
-  letter-spacing:-.004em}}
 .sheet{{
-  overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
-  padding:.95rem 1.15rem calc(1.25rem + env(safe-area-inset-bottom));
-  background:var(--bg);scrollbar-width:none;
-  max-height:46dvh;
-  box-shadow:0 -1px 0 var(--line);
+  flex:1;padding:1.05rem 1.15rem 1.25rem;
+  background:var(--surface);border:1px solid var(--line);border-radius:1rem;
 }}
 /* Desktop: stop stacking. The reel keeps its portrait shape beside the note
    instead of stretching a phone layout across a monitor. */
 @media(min-width:820px){{
-  .reel{{grid-template-rows:none;grid-template-columns:minmax(0,1fr) minmax(340px,30rem)}}
-  .stage{{height:100dvh}}
-  .stage .poster{{max-height:88dvh;border-radius:14px;
-    box-shadow:0 24px 70px rgba(0,0,0,.55)}}
-  .caption{{left:50%;transform:translateX(-50%);width:min(100%,49.5dvh);
-    border-radius:0 0 14px 14px;padding:3rem 1rem .9rem;bottom:6dvh}}
-  .sheet{{max-height:none;height:100dvh;padding:2.5rem 2rem;
-    box-shadow:-1px 0 0 var(--line);display:flex;flex-direction:column;justify-content:center}}
-  .sheet > *{{max-width:34rem}}
+  .reel{{
+    flex-direction:row;align-items:center;gap:1.5rem;
+    max-width:62rem;margin:0 auto;padding:1.5rem 2rem;
+  }}
+  .stage{{height:min(74dvh,620px);max-height:none;flex:none;
+    aspect-ratio:9/16;border-radius:1.1rem;
+    box-shadow:0 20px 60px rgba(0,0,0,.35)}}
+  .sheet{{flex:1;align-self:stretch;display:flex;flex-direction:column;
+    justify-content:center;padding:2rem 2.15rem}}
   .feed-title{{font-size:1.5rem;letter-spacing:-.022em}}
 }}
 .sheet::-webkit-scrollbar{{display:none}}

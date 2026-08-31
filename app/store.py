@@ -95,6 +95,22 @@ class Store:
             return None
         return note_id
 
+    def find_written(self, url: str) -> str | None:
+        """The id of a note already written for this URL, if there is one.
+
+        Re-sharing a reel is the normal way to find it again, not a request to
+        transcribe it a second time — and each repeat costs a download, a
+        Whisper run and a model call. A failed or in-flight note is not a hit:
+        the first should be retried and the second is already on its way.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id FROM notes WHERE url=? AND status='ready' "
+                "ORDER BY created_at DESC LIMIT 1",
+                (url,),
+            ).fetchone()
+        return row["id"] if row else None
+
     def mark_failed(self, note_id: str, error: str) -> None:
         with self._conn() as conn:
             conn.execute(
