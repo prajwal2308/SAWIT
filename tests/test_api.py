@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import get_settings
-from app.main import app, get_store
+from app.main import KEY_COOKIE, app, get_store
 from app.store import Store
 
 from .conftest import API_KEY, IG_VERIFY_TOKEN, make_note
@@ -76,6 +76,53 @@ def test_text_with_no_url_is_rejected(client):
     )
 
     assert response.status_code == 422
+
+
+def test_a_browser_visit_trades_the_key_for_a_cookie(client):
+    assert client.get("/", params={"k": API_KEY}).status_code == 200
+    assert client.cookies.get(KEY_COOKIE) == API_KEY
+    # The key has done its job: the cookie alone opens the page from here on.
+    assert client.get("/").status_code == 200
+
+
+def test_the_cookie_keeps_the_key_out_of_generated_links(client):
+    client.store.create_pending("https://example.com/r/9")
+
+    # Still on the visit that sets the cookie, so a browser refusing cookies
+    # keeps working on ?k= alone rather than locking itself out.
+    assert API_KEY in client.get("/", params={"k": API_KEY}).text
+
+    once_cookied = client.get("/").text
+    assert API_KEY not in once_cookied
+    assert "?k=" not in once_cookied
+    # A hidden field with an empty value would put a bare k= on every search.
+    assert "name=k" not in once_cookied
+
+
+def test_a_rejected_key_grants_no_cookie(client):
+    assert client.get("/", params={"k": "wrong"}).status_code == 401
+    assert KEY_COOKIE not in client.cookies
+
+
+def test_the_shortcut_gets_no_cookie(client):
+    # It is not a browser — it sends the header on every call and has no jar.
+    response = client.post(
+        "/ingest", json={"url": "https://example.com/r/9"},
+        headers={"X-API-Key": API_KEY},
+    )
+    assert response.status_code == 202
+    assert KEY_COOKIE not in client.cookies
+
+
+def test_a_form_post_still_redirects_when_only_the_cookie_carries_the_key(client):
+    note_id = client.store.create_pending("https://x.test/r")
+    client.get("/", params={"k": API_KEY})
+
+    response = client.post(f"/notes/{note_id}/delete", follow_redirects=False)
+
+    # Without the cookie this would look like an API call and answer in JSON.
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
 
 
 def test_browser_views_accept_the_key_as_a_query_param(client):

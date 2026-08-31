@@ -47,15 +47,58 @@ def get_store() -> Store:
     return Store(get_settings().db_path)
 
 
+# A key in ?k= is a key in your history, your bookmarks and every referer the
+# page sends. One visit with ?k= trades it for this cookie, and the links the
+# pages generate go clean from the next request on.
+KEY_COOKIE = "sawit_key"
+KEY_COOKIE_MAX_AGE = 60 * 60 * 24 * 365
+
+
 def require_key(
     request: Request,
     k: str | None = Query(default=None, description="Key for browser views."),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    """Accept the key as a header (Shortcut) or ?k= (phone browser)."""
-    supplied = request.headers.get("x-api-key") or k or ""
-    if not secrets.compare_digest(supplied, settings.api_key):
+    """Accept the key as a header (Shortcut), ?k= (first visit) or the cookie."""
+    supplied = request.headers.get("x-api-key") or k or request.cookies.get(KEY_COOKIE) or ""
+    # compare_digest rejects non-ASCII outright rather than comparing it.
+    if not supplied.isascii() or not secrets.compare_digest(supplied, settings.api_key):
         raise HTTPException(status_code=401, detail="Bad or missing API key.")
+    if k and request.cookies.get(KEY_COOKIE) != supplied:
+        # Set on the way out, where the finished response is.
+        request.state.grant_cookie = supplied
+
+
+@app.middleware("http")
+async def _persist_key_cookie(request: Request, call_next: Any) -> Response:
+    response = await call_next(request)
+    granted = getattr(request.state, "grant_cookie", None)
+    if granted:
+        response.set_cookie(
+            KEY_COOKIE, granted,
+            max_age=KEY_COOKIE_MAX_AGE, httponly=True, samesite="lax",
+            # Over plain http — a laptop on localhost — a Secure cookie is
+            # simply dropped, and the browser views stop working.
+            secure=request.url.scheme == "https",
+        )
+    return response
+
+
+def _link_key(request: Request) -> str:
+    """The key to thread through generated links: nothing, once a cookie holds it.
+
+    Still emitted on the visit that sets the cookie, so a browser that refuses
+    cookies keeps working on ?k= alone rather than locking itself out.
+    """
+    if request.cookies.get(KEY_COOKIE):
+        return ""
+    return getattr(request.state, "grant_cookie", "") or ""
+
+
+def _qs(**params: str | None) -> str:
+    """A query string with the empty values dropped, so no bare `?k=` survives."""
+    kept = {p: v for p, v in params.items() if v}
+    return f"?{urlencode(kept)}" if kept else ""
 
 
 class IngestRequest(BaseModel):
@@ -200,6 +243,7 @@ def api_note(note_id: str, store: Store = Depends(get_store)) -> dict[str, Any]:
 def retry(
     note_id: str,
     background: BackgroundTasks,
+    request: Request,
     k: str | None = None,
     settings: Settings = Depends(get_settings),
     store: Store = Depends(get_store),
@@ -220,16 +264,21 @@ def retry(
     # No reply target on a retry: the DM window has usually closed by now, so
     # the result comes back by push instead.
     background.add_task(process, note_id, Source(page_url=note["url"]), settings, store)
-    return _redirect_or_json(k, f"/notes/{note_id}", {"id": note_id, "status": "pending"})
+    return _redirect_or_json(
+        request, k, f"/notes/{note_id}", {"id": note_id, "status": "pending"}
+    )
 
 
 @app.post("/notes/{note_id}/delete", dependencies=[Depends(require_key)])
 def delete_note_form(
-    note_id: str, k: str | None = None, store: Store = Depends(get_store)
+    note_id: str,
+    request: Request,
+    k: str | None = None,
+    store: Store = Depends(get_store),
 ) -> Response:
     if not store.delete(note_id):
         raise HTTPException(status_code=404, detail="No such note.")
-    return _redirect_or_json(k, "/", {"deleted": note_id})
+    return _redirect_or_json(request, k, "/", {"deleted": note_id})
 
 
 @app.delete("/api/notes/{note_id}", dependencies=[Depends(require_key)])
@@ -239,10 +288,12 @@ def delete_note(note_id: str, store: Store = Depends(get_store)) -> dict[str, st
     return {"deleted": note_id}
 
 
-def _redirect_or_json(k: str | None, path: str, payload: dict) -> Response:
+def _redirect_or_json(
+    request: Request, k: str | None, path: str, payload: dict
+) -> Response:
     """Browsers came from a form and want a page; the API wants JSON."""
-    if k:
-        return RedirectResponse(f"{path}?k={k}", status_code=303)
+    if k or request.cookies.get(KEY_COOKIE):
+        return RedirectResponse(f"{path}{_qs(k=_link_key(request))}", status_code=303)
     return JSONResponse(payload)
 
 
@@ -257,6 +308,7 @@ def thumbnail(note_id: str, store: Store = Depends(get_store)) -> Response:
 
 @app.get("/", response_class=HTMLResponse, dependencies=[Depends(require_key)])
 def index(
+    request: Request,
     q: str | None = None,
     category: str | None = None,
     k: str | None = None,
@@ -267,8 +319,9 @@ def index(
     else:
         notes = store.recent(100, category=category)
 
-    key = html.escape(k or "", quote=True)
-    chips = _category_chips(store.category_counts(), category, k, q)
+    link_key = _link_key(request)
+    key = html.escape(link_key, quote=True)
+    chips = _category_chips(store.category_counts(), category, link_key, q)
     if notes:
         rows = "\n".join(_card(note, key) for note in notes)
     elif category:
@@ -276,9 +329,12 @@ def index(
     else:
         rows = "<p class=empty>Nothing saved yet.</p>"
 
+    # Omitted entirely once the cookie carries it: a hidden field with an empty
+    # value still puts a bare `k=` on every search you run.
+    key_field = f'<input type=hidden name=k value="{key}">' if key else ""
     return HTMLResponse(_page(
         f"""<form method=get>
-              <input type=hidden name=k value="{key}">
+              {key_field}
               <input type=hidden name=category value="{html.escape(category or '', quote=True)}">
               <input name=q value="{html.escape(q or '', quote=True)}"
                      placeholder="Search everything you saved" autocomplete=off>
@@ -296,9 +352,8 @@ def _category_chips(
         return ""
 
     def chip(label: str, value: str | None, count: int) -> str:
-        params = {p: v for p, v in (("k", key), ("q", q), ("category", value)) if v}
         # escape() the query string too: a bare & in an href is invalid HTML.
-        href = html.escape(f"/?{urlencode(params)}", quote=True)
+        href = html.escape(f"/{_qs(k=key, q=q, category=value)}", quote=True)
         css = "chip on" if value == active else "chip"
         return (f"<a class='{css}' href='{href}'>"
                 f"{html.escape(label)} <span>{count}</span></a>")
@@ -312,19 +367,22 @@ def _category_chips(
 @app.get("/notes/{note_id}", response_class=HTMLResponse, dependencies=[Depends(require_key)])
 def note_page(
     note_id: str,
+    request: Request,
     k: str | None = None,
     store: Store = Depends(get_store),
 ) -> HTMLResponse:
     note = store.get(note_id)
     if note is None:
         raise HTTPException(status_code=404, detail="No such note.")
-    key = html.escape(k or "", quote=True)
+    link_key = _link_key(request)
+    key = html.escape(link_key, quote=True)
+    home = html.escape(f"/{_qs(k=link_key)}", quote=True)
     esc = lambda s: html.escape(str(s or ""))  # noqa: E731
 
     if note["status"] != "ready":
         detail = esc(note.get("error") or "Still working on it.")
         return HTMLResponse(_page(
-            f"<a href='/?k={key}'>&larr; all notes</a>"
+            f"<a href='{home}'>&larr; all notes</a>"
             f"<h1>{esc(note['status'])}</h1><p>{detail}</p>"
             f"<p><a href='{esc(note['url'])}'>The original reel</a></p>"
             f"{_actions(note, key)}"
@@ -336,10 +394,13 @@ def note_page(
         body = "".join(render(i) for i in items)
         return f"<h2>{heading}</h2><ul>{body}</ul>"
 
+    category_href = html.escape(
+        f"/{_qs(k=link_key, category=note['category'])}", quote=True
+    )
     parts = [
-        f"<a href='/?k={key}'>&larr; all notes</a>",
+        f"<a href='{home}'>&larr; all notes</a>",
         f"<h1>{esc(note['title'])}</h1>",
-        f"<p class=meta><a href='/?k={key}&category={esc(note['category'])}'>"
+        f"<p class=meta><a href='{category_href}'>"
         f"{esc(note['category'])}</a>"
         + (f" &middot; {esc(note['uploader'])}" if note.get("uploader") else "")
         + "</p>",
@@ -360,11 +421,12 @@ def _actions(note: dict[str, Any], key: str) -> str:
     """Retry and delete. Forms, not links — a link that deletes is a trap for
     anything that prefetches."""
     note_id = html.escape(note["id"])
+    qs = html.escape(_qs(k=key), quote=True)
     buttons = ""
     if note["status"] == "failed":
-        buttons += (f"<form method=post action='/notes/{note_id}/retry?k={key}'>"
+        buttons += (f"<form method=post action='/notes/{note_id}/retry{qs}'>"
                     f"<button>Retry</button></form>")
-    buttons += (f"<form method=post action='/notes/{note_id}/delete?k={key}' "
+    buttons += (f"<form method=post action='/notes/{note_id}/delete{qs}' "
                 f"onsubmit=\"return confirm('Delete this note?')\">"
                 f"<button class=danger>Delete</button></form>")
     return f"<div class=actions>{buttons}</div>"
@@ -373,14 +435,15 @@ def _actions(note: dict[str, Any], key: str) -> str:
 def _card(note: dict[str, Any], key: str) -> str:
     esc = html.escape
     note_id = esc(note["id"])
+    qs = esc(_qs(k=key), quote=True)
     if note["status"] != "ready":
         label = "failed" if note["status"] == "failed" else "working…"
-        return (f"<a class=card href='/notes/{note_id}?k={key}'>"
+        return (f"<a class=card href='/notes/{note_id}{qs}'>"
                 f"<div><p class=meta>{label}</p>"
                 f"<p class=lede>{esc(note.get('error') or note['url'])}</p></div></a>")
-    thumb = (f"<img src='/notes/{note_id}/thumb.jpg?k={key}' alt='' loading=lazy>"
+    thumb = (f"<img src='/notes/{note_id}/thumb.jpg{qs}' alt='' loading=lazy>"
              if note["has_thumbnail"] else "")
-    return (f"<a class=card href='/notes/{note_id}?k={key}'>{thumb}"
+    return (f"<a class=card href='/notes/{note_id}{qs}'>{thumb}"
             f"<div><p class=meta>{esc(note['category'])}</p>"
             f"<h3>{esc(note['title'])}</h3>"
             f"<p class=lede>{esc(note['one_liner'])}</p></div></a>")
