@@ -16,4 +16,8 @@ ENV SAWIT_DB=/data/sawit.sqlite3
 # volumes. Both still land the database on a real disk at /data.
 EXPOSE 8000
 
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# --forwarded-allow-ips='*' because Fly and Railway both terminate TLS at their
+# proxy and forward plain http. Without it uvicorn distrusts X-Forwarded-Proto,
+# every request looks like http, and the key cookie never gets its Secure flag.
+# Safe here: only the platform's proxy can reach the container.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --forwarded-allow-ips='*'"]
