@@ -296,6 +296,29 @@ the tradeoff is a generic app icon on the notification.
 Now: reel → Share → *Save Reel* → the sheet closes. Thirty seconds later the
 takeaway lands on your lock screen.
 
+## Accounts
+
+Notes belong to accounts. **/signup** creates one, **/login** returns to it, and
+**/account** shows the API key that account's Shortcut should send.
+
+SQLite has no row-level security, so the isolation lives one level down: a
+`Store` is constructed bound to an account and every note query filters on it
+inside `store.py`. Endpoints cannot forget the filter because they never write
+one, and an unbound `Store` raises rather than quietly returning everybody's
+notes. `tests/test_isolation.py` is what stands in for RLS — it drives the whole
+note surface with two accounts, and walks every `Store` method to fail if a new
+one forgets to scope itself. A note id from another account returns 404 rather
+than 403: whether it exists is not something to leak.
+
+**Upgrading from before accounts existed costs nothing.** On first boot with no
+accounts, `SAWIT_API_KEY` becomes the first account's key and every note that
+predates accounts is handed to it, so an existing Shortcut keeps working and no
+library disappears.
+
+**Signup is open.** Anyone who has the URL can create an account, and their
+transcription and model calls come out of your quota. Put the address somewhere
+private, or add an invite gate, before sharing it.
+
 ## Reading your notes
 
 - The DM reply itself — title, takeaways, the steps, the numbers.
@@ -307,6 +330,17 @@ takeaway lands on your lock screen.
   does not mean scrolling past travel. Only categories that actually have notes
   are offered, and a chip keeps whatever you have already typed in the search
   box — tapping one narrows, it never resets.
+- **Search understands what you meant**, not only what you typed. Every note
+  carries an embedding alongside the FTS index, so "how should I split my
+  salary" finds the note titled "Allocate monthly net income using a
+  55/5/10/15/15 split" — which shares no word with the query. Keyword hits still
+  rank first, so exact phrases you remember behave as they always did. The
+  vectors come from the same endpoint as the extraction, so this needs no second
+  key and nothing running locally; `POST /api/reindex` backfills notes written
+  before it existed.
+- **The feed** (`/feed`) pages sideways, one note per card, with the note
+  scrolling down inside it — two axes doing two jobs, so no gesture has to guess
+  which you meant.
 - `GET /api/notes?q=...&category=finance` with the `X-API-Key` header, if you
   want the JSON. `GET /api/categories` lists the categories in use with counts.
 
@@ -321,6 +355,15 @@ on your host — it is the one place this project talks to a non-Anthropic model
 because Claude does not do speech-to-text.
 
 ## When something goes wrong
+
+**An image post, not a reel.** A carousel has no video stream, so yt-dlp
+refuses it outright. Sawit falls back to the post's caption, which on a
+ten-slide guide is usually where the content is. The slides themselves are
+behind Instagram's login wall and are not read.
+
+**A reel you already saved.** Re-sharing returns the note you already have
+rather than downloading and transcribing it a second time. A *failed* note is
+not a hit — re-sharing that does try again.
 
 **A note says "failed".** Open it — the error is on the page, and so is a
 **Retry** button. Retry re-runs through the page URL, so it works for anything
