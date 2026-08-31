@@ -8,7 +8,10 @@ primary_region = "iad"
 [env]
   # Must match the mount below: notes have to outlive a redeploy.
   SAWIT_DB = "/data/sawit.sqlite3"
-  YTDLP_COOKIES_FILE = "/data/cookies.txt"
+  # Empty on purpose: public reels need no session, and a deployed host is the
+  # worst place to keep one. Set it only if downloads start hitting a login
+  # wall, and then from a throwaway account — see the README.
+  YTDLP_COOKIES_FILE = ""
 
 [mounts]
   source = "sawit_data"

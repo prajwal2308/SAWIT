@@ -151,12 +151,33 @@ you would download, transcribe and pay for the same reel twice.
 If the send call is rejected, check `IG_API_VERSION` first; the endpoint shape
 moves between Graph versions and is config here, not code.
 
-## Cookies
+## Cookies — try without them first
 
-Most Instagram and Facebook URLs return a login wall to a server. Export cookies
-from a browser where you are logged in (any "Netscape format" cookie exporter
-extension), save as `cookies.txt`, and point `YTDLP_COOKIES_FILE` at it. Treat
-that file like a password — it *is* your session.
+**Start with `YTDLP_COOKIES_FILE` empty.** Public reels download unauthenticated,
+and if yours do, you are done: there is no credential to leak, nothing to rotate,
+and nothing to put on a server.
+
+Reach for cookies only when a download actually fails with a login wall — private
+accounts, age-restricted posts, or an IP that Instagram has started throttling.
+
+When you do need them, **use a throwaway Instagram account, not your own.** A
+`cookies.txt` is not password-shaped, it is session-shaped: `sessionid` is a live
+login, and whoever holds the file is you — your DMs, your posts, everything. That
+matters more than it first appears, because the file has to travel:
+
+- **Deployed**, it lives on a host you do not fully control, in a volume or an
+  image layer, for as long as the session lasts.
+- **Shared with anyone else**, every reel *they* save is downloaded as *you*.
+  One account pulling hundreds of reels from a datacenter IP is the shape of
+  traffic that gets accounts disabled — a ban risk, not just a privacy one.
+
+If both of those apply to you, the DM path is the real answer rather than a
+better cookie jar: Meta hands over the media URL itself, so there is no scraping
+and no credential anywhere.
+
+Export in Netscape format (any "cookies.txt" exporter extension), keep it out of
+git — the shipped `.gitignore` already covers `cookies.txt` — and point
+`YTDLP_COOKIES_FILE` at it.
 
 ## Run it from your laptop first
 
