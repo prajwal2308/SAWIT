@@ -252,3 +252,46 @@ def test_a_shortcut_url_that_is_not_a_url_is_ignored(monkeypatch):
     get_settings.cache_clear()
     assert get_settings().shortcut_url == "https://www.icloud.com/shortcuts/abc"
     get_settings.cache_clear()
+
+
+def test_the_generated_shortcut_carries_that_account_and_no_other(web, settings):
+    """One shared link cannot serve everybody — a shortcut carries whatever key
+    was in it. Generating one per account is what removes the paste."""
+    import plistlib
+    from dataclasses import replace as dc_replace
+
+    app.dependency_overrides[get_settings] = lambda: dc_replace(
+        settings, public_base_url="https://sawit.test")
+    web.post("/signup", data={"email": "new@test.com", "password": PASSWORD})
+    mine = web.store.user_by_email("new@test.com")["api_key"]
+    bootstrap_owner(web.store, settings)
+
+    body = web.get(f"/shortcut/{mine}.shortcut").content
+    plist = plistlib.loads(body)
+
+    assert plist["WFWorkflowTypes"] == ["ActionExtension"], "must reach the share sheet"
+    flat = str(plist)
+    assert mine in flat, "the account's own key has to be in it"
+    assert API_KEY not in flat, "and nobody else's"
+    assert "https://sawit.test/ingest" in flat
+
+
+def test_a_shortcut_for_a_key_nobody_owns_is_404(web):
+    assert web.get("/shortcut/not-a-real-key.shortcut").status_code == 404
+
+
+def test_welcome_offers_the_generated_shortcut_before_the_shared_one(web, settings):
+    from dataclasses import replace as dc_replace
+
+    app.dependency_overrides[get_settings] = lambda: dc_replace(
+        settings, public_base_url="https://sawit.test",
+        shortcut_url="https://www.icloud.com/shortcuts/abc")
+    bootstrap_owner(web.store, settings)
+
+    # By header, not the session cookie: an https base_url makes that cookie
+    # Secure, and TestClient speaks http.
+    page = web.get("/welcome", headers={"X-API-Key": API_KEY}).text
+
+    assert "Install my shortcut" in page
+    assert "shortcuts://import-shortcut" in page
+    assert page.index("Install my shortcut") < page.index("Or install the shared one")

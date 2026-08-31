@@ -27,6 +27,7 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 from . import accounts, instagram
 from . import embed as embed_mod
+from . import shortcut as shortcut_mod
 from .config import Settings, get_settings
 from .pipeline import Source, process
 from .store import Store
@@ -325,6 +326,35 @@ def logout() -> Response:
     return response
 
 
+@app.get("/shortcut/{api_key}.shortcut", include_in_schema=False)
+def personal_shortcut(
+    api_key: str,
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    store: Store = Depends(base_store),
+) -> Response:
+    """A shortcut built for one account, with that account's key already in it.
+
+    The key is the path rather than a header because the Shortcuts app fetches
+    this itself and carries no session — and the URL is exactly as secret as the
+    key it delivers, so nothing is given away that holding the URL did not
+    already give away.
+    """
+    user = store.user_by_api_key(api_key)
+    if user is None:
+        raise HTTPException(status_code=404, detail="No such shortcut.")
+    base = settings.public_base_url or str(request.base_url).rstrip("/")
+    data = shortcut_mod.build(f"{base}/ingest", user["api_key"])
+    return Response(
+        data,
+        media_type="application/x-plist",
+        headers={
+            "Content-Disposition": 'attachment; filename="Sawit.shortcut"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/welcome", response_class=HTMLResponse, dependencies=[Depends(require_key)])
 def welcome(
     user: dict[str, Any] = Depends(current_user),
@@ -337,15 +367,30 @@ def welcome(
     where people close the tab.
     """
     key = html.escape(user["api_key"], quote=True)
-    install = (
-        f"<a class='row primary' href='{html.escape(settings.shortcut_url, quote=True)}'>"
-        f"<span>Add the Sawit shortcut</span><span class=chev>&rsaquo;</span></a>"
-        if settings.shortcut_url else
-        "<p class=lede>This deployment has no one-tap installer yet. Build the "
-        "shortcut once by hand — the recipe is on your Account page — then set "
-        "<code>SAWIT_SHORTCUT_URL</code> to its iCloud link so nobody has to "
-        "do it again.</p>"
+    base = settings.public_base_url or ""
+    mine = f"{base}/shortcut/{user['api_key']}.shortcut"
+    generated = (
+        f"<a class='row primary' href='shortcuts://import-shortcut?"
+        f"url={quote_plus(mine)}&name=Sawit'>"
+        f"<span>Install my shortcut</span><span class=chev>&rsaquo;</span></a>"
+        "<p class=lede>Built for your account, with your key already in it &mdash; "
+        "nothing to paste. iOS only imports a shortcut it did not sign once "
+        "<b>Settings &rarr; Shortcuts &rarr; Allow Untrusted Shortcuts</b> is on, "
+        "which is one switch, once.</p>"
+    ) if base else ""
+    shared = (
+        f"<a class='row' href='{html.escape(settings.shortcut_url, quote=True)}'>"
+        f"<span>{'Or install the shared one' if generated else 'Add the Sawit shortcut'}"
+        f"</span><span class=chev>&rsaquo;</span></a>"
+        "<p class=lede>The shared copy arrives with a placeholder where the key "
+        "goes, so open it once and paste yours in.</p>"
+    ) if settings.shortcut_url else ""
+    install = generated + shared or (
+        "<p class=lede>This deployment has no installer set up yet. Build the "
+        "shortcut once by hand \u2014 the recipe is on your Account page \u2014 "
+        "then set <code>SAWIT_SHORTCUT_URL</code> to its iCloud link.</p>"
     )
+
     return HTMLResponse(_page(
         "<div class=welcome>"
         "<h1>You're in.</h1>"
