@@ -14,6 +14,7 @@ from __future__ import annotations
 import array
 import logging
 import math
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +90,61 @@ def cosine(a: list[float], b: list[float]) -> float:
     if na == 0.0 or nb == 0.0:
         return 0.0
     return dot / (math.sqrt(na) * math.sqrt(nb))
+
+
+def embed_note(note: dict, settings: Any, store: Any) -> bool:
+    """Give a note its vector. Never raises — search degrades, nothing breaks."""
+    if not settings.embed_model:
+        return False
+    text = note_text(note)
+    if not text:
+        return False
+    try:
+        vectors = embed(
+            [text],
+            model=settings.embed_model,
+            base_url=settings.nvidia_base_url,
+            api_key=settings.nvidia_api_key,
+        )
+    except EmbeddingError as exc:
+        log.warning("Could not embed note %s: %s", note.get("id"), exc)
+        return False
+    store.set_embedding(note["id"], to_blob(vectors[0]))
+    return True
+
+
+def rank(query: str, settings: Any, store: Any, *, category: str | None = None,
+         limit: int = 40, floor: float = 0.25) -> list[str]:
+    """Note ids most like the query, best first.
+
+    `floor` is what stops semantic search from answering every question: without
+    it the nearest note is returned however unrelated it is, and a search for
+    something you never saved comes back confidently wrong.
+    """
+    if not settings.embed_model:
+        return []
+    stored = store.embeddings(category=category)
+    if not stored:
+        return []
+    try:
+        query_vector = embed(
+            [query],
+            model=settings.embed_model,
+            base_url=settings.nvidia_base_url,
+            api_key=settings.nvidia_api_key,
+            query=True,
+        )[0]
+    except EmbeddingError as exc:
+        log.warning("Could not embed the query: %s", exc)
+        return []
+
+    scored = [
+        (note_id, cosine(query_vector, from_blob(blob)))
+        for note_id, blob in stored
+    ]
+    scored = [(i, s) for i, s in scored if s >= floor]
+    scored.sort(key=lambda pair: pair[1], reverse=True)
+    return [note_id for note_id, _ in scored[:limit]]
 
 
 def note_text(note: dict) -> str:

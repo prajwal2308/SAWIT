@@ -7,6 +7,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import embed as embed_mod
 from . import extract as extract_mod
 from . import instagram, notify, transcribe
 from . import media as media_mod
@@ -89,6 +90,10 @@ def process(note_id: str, source: Source, settings: Settings, store: Store) -> N
             duration=item.duration,
             thumbnail=thumbnail,
         )
+        # After the note is safely stored, and never in a way that can lose it:
+        # a missing vector costs meaning-based search for this one note, and
+        # the keyword index still finds it.
+        embed_mod.embed_note(store.get(note_id) or {}, settings, store)
         _deliver(note_id, source, note, settings)
 
     except Exception as exc:

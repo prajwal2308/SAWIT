@@ -34,6 +34,9 @@ class Settings:
     nvidia_base_url: str
     # Send frames to the model. Turn off for a text-only model.
     vision: bool
+    # Meaning-based search alongside the keyword index. Empty model disables it,
+    # and the service runs exactly as before.
+    embed_model: str
 
     asr_backend: str
     whisper_model: str
@@ -72,6 +75,10 @@ class Settings:
 DEFAULT_NVIDIA_MODEL = "meta/llama-4-maverick-17b-128e-instruct"
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5"
 
+# Retrieval vectors, from the same OpenAI-compatible endpoint as the extraction,
+# so semantic search needs no second key and nothing running locally.
+DEFAULT_EMBED_MODEL = "nvidia/nemotron-3-embed-1b"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
@@ -101,6 +108,7 @@ def get_settings() -> Settings:
             "NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"
         ).rstrip("/"),
         vision=_flag("SAWIT_VISION", default=True),
+        embed_model=os.environ.get("SAWIT_EMBED_MODEL", DEFAULT_EMBED_MODEL).strip(),
         asr_backend=os.environ.get("SAWIT_ASR", "faster-whisper"),
         whisper_model=os.environ.get("SAWIT_WHISPER_MODEL", "small"),
         asr_model=os.environ.get("ASR_MODEL", "whisper-1"),

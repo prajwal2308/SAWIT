@@ -149,6 +149,53 @@ def test_the_paste_box_needs_the_key(client):
     assert client.started == []
 
 
+def test_search_adds_meaning_hits_after_the_keyword_ones(client, monkeypatch):
+    """The two answer different questions. Keeping keyword first means adding
+    meaning never costs precision on the searches that already worked."""
+    from app import embed as embed_mod
+
+    word = client.store.create_pending("https://x.test/word")
+    client.store.save_note(word, make_note(title="A budget rule"), transcript="budget")
+    meaning = client.store.create_pending("https://x.test/meaning")
+    client.store.save_note(
+        meaning,
+        # Deliberately shares not one word with the query — which is the whole
+        # point: FTS cannot reach it, and it is still the note you wanted.
+        make_note(title="Allocate 55/5/10/15/15", tags=["allocation"],
+                  one_liner="Divide net income five ways.",
+                  takeaways=["55 percent to essentials"], steps=[], key_facts=[]),
+        transcript="nothing in common",
+    )
+
+    monkeypatch.setattr(embed_mod, "rank", lambda *a, **k: [meaning, word])
+    client.get("/", params={"k": API_KEY})
+
+    page = client.get("/", params={"q": "budget"}).text
+
+    assert "A budget rule" in page
+    assert "Allocate 55/5/10/15/15" in page          # found with no shared word
+    assert page.index("A budget rule") < page.index("Allocate 55/5/10/15/15")
+
+
+def test_reindex_only_touches_notes_without_a_vector(client, monkeypatch):
+    from app import embed as embed_mod
+
+    done = client.store.create_pending("https://x.test/done")
+    client.store.save_note(done, make_note(), transcript="t")
+    client.store.set_embedding(done, embed_mod.to_blob([1.0, 0.0]))
+    todo = client.store.create_pending("https://x.test/todo")
+    client.store.save_note(todo, make_note(), transcript="t")
+
+    seen = []
+    monkeypatch.setattr(embed_mod, "embed_note",
+                        lambda note, s, st: seen.append(note["id"]) or True)
+
+    body = client.post("/api/reindex", headers={"X-API-Key": API_KEY}).json()
+
+    assert seen == [todo], "a note that already has a vector must be left alone"
+    assert body["considered"] == 1
+
+
 def test_clearing_the_search_really_clears_it(client):
     """The category used to ride along in a hidden field, so emptying the box
     you could see left you filtered by something you could not."""

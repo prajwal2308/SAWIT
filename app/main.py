@@ -25,6 +25,7 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, ValidationError, field_validator
 
+from . import embed as embed_mod
 from . import instagram
 from .config import Settings, get_settings
 from .pipeline import Source, process
@@ -195,6 +196,23 @@ def add_from_page(
                              {"id": note_id, "status": "pending"})
 
 
+@app.post("/api/reindex", dependencies=[Depends(require_key)])
+def reindex(
+    limit: int = 200,
+    settings: Settings = Depends(get_settings),
+    store: Store = Depends(get_store),
+) -> dict[str, Any]:
+    """Embed notes written before this existed, or whose embedding failed.
+
+    Safe to run repeatedly: it only touches notes that have no vector, so a
+    second call after a partial run picks up exactly what is left.
+    """
+    pending = store.awaiting_embedding(limit)
+    done = sum(1 for note in pending if embed_mod.embed_note(note, settings, store))
+    return {"considered": len(pending), "embedded": done,
+            "remaining": len(store.awaiting_embedding(limit))}
+
+
 @app.get("/webhook/instagram", response_class=PlainTextResponse)
 def webhook_verify(
     request: Request,
@@ -351,10 +369,11 @@ def index(
     category: str | None = None,
     k: str | None = None,
     mode: str | None = None,
+    settings: Settings = Depends(get_settings),
     store: Store = Depends(get_store),
 ) -> HTMLResponse:
     if q:
-        notes = store.search(q, 100, category=category)
+        notes = _hybrid(q, category, settings, store)
     else:
         notes = store.recent(100, category=category)
 
@@ -415,6 +434,25 @@ def index(
             {drawer}
             {_tabs(link_key, mode, q, category)}"""
     ))
+
+
+def _hybrid(
+    q: str, category: str | None, settings: Settings, store: Store
+) -> list[dict[str, Any]]:
+    """Keyword hits first, then anything the meaning search adds.
+
+    The two answer different questions and neither replaces the other. Typing an
+    exact phrase you remember should return that note at the top, which is what
+    FTS is good at; asking for "budgeting advice" should still surface the note
+    called "Allocate monthly net income using a 55/5/10/15/15 split", which
+    shares not one word with the query. Keeping FTS first means adding meaning
+    never costs precision on the searches that already worked.
+    """
+    keyword = store.search(q, 100, category=category)
+    seen = {n["id"] for n in keyword}
+    extra_ids = [i for i in embed_mod.rank(q, settings, store, category=category)
+                 if i not in seen]
+    return keyword + store.by_ids(extra_ids)
 
 
 def _searching_note(q: str | None, category: str | None, key: str) -> str:

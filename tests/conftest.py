@@ -18,6 +18,9 @@ def settings(tmp_path) -> Settings:
         nvidia_api_key=None,
         nvidia_base_url="https://integrate.api.nvidia.example/v1",
         vision=True,
+        # Off by default so nothing in the suite reaches the embedding endpoint
+        # by accident; the tests that exercise it turn it on and stub the call.
+        embed_model="",
         asr_backend="faster-whisper",
         whisper_model="tiny",
         asr_model="whisper-1",

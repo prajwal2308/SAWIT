@@ -36,7 +36,11 @@ CREATE TABLE IF NOT EXISTS notes (
     error         TEXT,
     -- Meta's message id. Webhooks are retried, so this is what stops one
     -- share from being downloaded, transcribed and billed twice.
-    source_mid    TEXT
+    source_mid    TEXT,
+    -- float32 vector of the note's meaning, for search that is not keyword
+    -- matching. Null is normal: embedding is best-effort and a note without
+    -- one is still findable through FTS.
+    embedding     BLOB
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS notes_mid_idx ON notes(source_mid)
@@ -64,6 +68,11 @@ class Store:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            # CREATE TABLE IF NOT EXISTS leaves a database made by an older
+            # version untouched, so a column added later has to be added here.
+            existing = {r["name"] for r in conn.execute("PRAGMA table_info(notes)")}
+            if "embedding" not in existing:
+                conn.execute("ALTER TABLE notes ADD COLUMN embedding BLOB")
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -94,6 +103,55 @@ class Store:
         except sqlite3.IntegrityError:
             return None
         return note_id
+
+    def set_embedding(self, note_id: str, blob: bytes) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE notes SET embedding=? WHERE id=?", (blob, note_id))
+
+    def embeddings(self, category: str | None = None) -> list[tuple[str, bytes]]:
+        """Every stored vector, for a similarity sweep in Python.
+
+        Loading them all is the right shape here: a few thousand notes is a few
+        megabytes and a few milliseconds, and it needs no index to maintain and
+        no extra service to run. Revisit when the count makes it show in a
+        profile, not before.
+        """
+        clause, params = _category_clause(category, prefix="", conjunction="AND")
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT id, embedding FROM notes "
+                f"WHERE embedding IS NOT NULL AND status='ready' {clause}",
+                params,
+            ).fetchall()
+        return [(r["id"], r["embedding"]) for r in rows]
+
+    def awaiting_embedding(self, limit: int = 200) -> list[dict[str, Any]]:
+        """Notes written before embedding existed, or whose embedding failed."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT *, thumbnail IS NOT NULL AS has_thumbnail FROM notes "
+                "WHERE embedding IS NULL AND status='ready' "
+                "ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    def by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Hydrate notes and hand them back in the order asked for.
+
+        SQL will not preserve the ranking, and the ranking is the whole result.
+        """
+        if not ids:
+            return []
+        marks = ",".join("?" * len(ids))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT *, thumbnail IS NOT NULL AS has_thumbnail FROM notes "
+                f"WHERE id IN ({marks})",
+                tuple(ids),
+            ).fetchall()
+        found = {r["id"]: _row_to_dict(r) for r in rows}
+        return [found[i] for i in ids if i in found]
 
     def find_written(self, url: str) -> str | None:
         """The id of a note already written for this URL, if there is one.
@@ -302,7 +360,9 @@ def _fts_query(query: str) -> str:
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    data = {k: row[k] for k in row.keys() if k != "thumbnail"}
+    # Both blobs are dropped: they have their own accessors, and a raw one here
+    # would ride SELECT * straight into a JSON response and fail to serialise.
+    data = {k: row[k] for k in row.keys() if k not in ("thumbnail", "embedding")}
     for field in ("takeaways", "key_facts", "steps", "caveats", "tags"):
         raw = data.get(field)
         data[field] = json.loads(raw) if raw else []
