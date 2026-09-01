@@ -26,33 +26,192 @@ there is no scraping and nothing to break.
 and closes instantly; the answer arrives as a push notification. This covers
 Facebook reels, and anything else with a URL.
 
-## How it works
+## Architecture
 
 ```
- DM to the account ──► webhook ──┐        (Meta hands over the media URL)
-                                 ├─► 200/202 immediately, nothing to wait on
- share sheet ─► Shortcut ─► /ingest ──┘   (yt-dlp scrapes the page URL)
-                                 │
-               ffmpeg ───────────┤ 16 kHz mono audio + 8 stills
-               whisper ──────────┤ transcript
-               a model ──────────┤ typed note (title, takeaways,
-                                 │   steps, key facts, caveats)
-               SQLite + FTS5 ────┤ stored and searchable
-                                 └─► reply in the DM thread, or push via ntfy
+  iOS share sheet ──► Shortcut ──┐
+                                  ├──► POST /ingest ──► 202 in ~0s, row written
+  Instagram DM ──► webhook ──────┘                          │
+                                                             │  (background task)
+   ┌─────────────────────────────────────────────────────────┘
+   │
+   ├─ 1. FETCH      yt-dlp downloads the mp4  ·  no video? fall back to the caption
+   ├─ 2. PROBE      ffprobe asks whether an audio stream exists at all
+   ├─ 3. RENDER     ffmpeg → 16 kHz mono wav  +  8 stills at even offsets
+   ├─ 4. TRANSCRIBE faster-whisper, int8 on CPU, one at a time behind a lock
+   ├─ 5. EXTRACT    transcript + 8 base64 frames → multimodal model → typed note
+   ├─ 6. EMBED      the note (not the transcript) → 2048-dim vector
+   ├─ 7. STORE      SQLite: row + FTS5 index + vector + one thumbnail
+   └─ 8. DELIVER    reply in the DM thread, or push via ntfy
+                                                             │
+   the temp directory is deleted here ──────────────────────┘
+   video, audio and all 8 frames go with it
 ```
 
-Two design decisions worth knowing:
+Everything after the 202 happens in a `tempfile.TemporaryDirectory`, so the
+video is gone by the time the note exists — including when the pipeline throws.
+What survives is the note, its transcript, one still, and a vector. 17 notes
+occupy 36 MB; a single reel download is 8.8 MB, which is the whole argument for
+not keeping them.
 
-**The stills are not decoration — they are usually the whole source.** Reels
-routinely put the numbers, formulas and lists on screen and never say them out
-loud. Eight frames go to the model alongside the transcript, so a "how to
-calculate X" reel yields the actual calculation. In practice most reels tested
-had no speech at all, and the transcript was empty.
+### How the extraction works
 
-**One note schema, not one per category.** Category-specific guidance lives in
-the prompt; the schema stays flat. The `steps` field is the one that earns its
-keep — it is the difference between "explains a budgeting rule" and a procedure
-you can follow without opening the video again.
+The model is asked for a **typed object, not prose**. `ReelNote` is a Pydantic
+model — title, category, one-liner, takeaways, key facts, steps, caveats, tags —
+and the same schema is enforced three different ways depending on what the
+backend supports:
+
+1. **Anthropic** — `messages.parse()` with the model class, which validates on
+   the way out.
+2. **OpenAI-compatible** — `response_format={"type": "json_schema", strict: true}`
+   with the schema inlined. `$ref`/`$defs` are where open models' constrained
+   decoding falls over, so `strict_schema()` resolves every reference, closes
+   every object with `additionalProperties: false`, and marks every field
+   required.
+3. **Fallback** — if the endpoint rejects `json_schema` outright, it retries in
+   plain JSON mode with the schema in the prompt. A weaker model degrades
+   instead of failing the note.
+
+Then `_parse` validates. If that fails, it scans brace-matched candidates and
+takes the first that validates — because a *reasoning* model narrates before it
+answers, and the note arrives after the prose rather than instead of it. Losing
+a reel to a preamble is the wrong trade.
+
+**The frames are usually the entire source.** Every reel tested transcribed to
+nothing: they are music over on-screen text. The transcript was empty and the
+note came from the stills. This is why the model choice is not interchangeable —
+the default takes **12 images per request** and the llama-vision models take
+exactly **one**. At one frame the extractor returned the words on a single card
+as the title, the summary, and every tag. At eight it read a six-panel visual
+pun correctly.
+
+**The prompt permits emptiness.** Told to put "every number and name" in
+`key_facts`, a model handed a joke reel obliges and emits rows whose label
+restates their value. The rules now say an empty field is a correct answer, that
+a key fact whose label repeats its value is on-screen text copied out rather
+than a fact, and that a reel teaching nothing should reach for `other`.
+
+### How search works
+
+Two indexes over the same notes, because they answer different questions.
+
+**FTS5** matches words — exact phrases you remember, ranked newest-first.
+
+**Embeddings** match meaning. Each note gets a 2048-dimension vector from the
+same endpoint that does the extraction, so this needs no second service and
+nothing running locally. Similarity is cosine over a plain Python loop: a few
+thousand notes is a few milliseconds, and it keeps numpy out of an image already
+tight on memory. A relevance floor stops the nearest note being returned however
+unrelated it is.
+
+Results are merged keyword-first, so adding meaning never costs precision on
+searches that already worked. What it buys:
+
+| Query | Note returned | Words shared |
+|---|---|---|
+| how should i split my salary | Allocate monthly net income using a 55/5/10/15/15 split | 0 |
+| something sweet to cook | Mango Sago Dessert Recipe | 0 |
+| finding candidates to hire | Juicebox: build candidate shortlists and outreach | 0 |
+
+The transcript is deliberately left out of the vector. It is long, usually empty
+on these reels, and averaging it in drags the note toward whatever the creator
+rambled about rather than what the note is for.
+
+### How isolation works
+
+SQLite has no row-level security, so it lives one level down. A `Store` is
+**constructed bound to an account**, and every note query filters on that id
+inside `store.py`. Endpoints cannot forget the filter because they never write
+one — `get_store` is request-scoped, so all 20+ routes inherited isolation
+without being edited. An unbound `Store` **raises** rather than quietly
+returning everybody's notes, which is the failure mode that matters.
+
+`tests/test_isolation.py` is what stands in for RLS. It drives the whole note
+surface with two accounts, asserts that a note id from another account is
+indistinguishable from one that does not exist (404, not 403), that writes
+cannot reach across, that dedup does not leak the existence of someone else's
+note — and it walks every `Store` method by reflection, failing if a newly added
+one forgets to scope itself.
+
+### Failure handling
+
+Work runs in-process, so a redeploy kills whatever was mid-flight. Anything
+still `pending` at boot is marked failed with a reason and a Retry button rather
+than sitting on "working…" forever. Every stage degrades rather than cascading:
+a missing frame is skipped, a failed embedding costs meaning-search for one note,
+a rejected DM falls back to push, and a post with no video falls back to its
+caption.
+
+### Layout
+
+| Module | Lines | Does |
+|---|---|---|
+| `main.py` | 1605 | HTTP surface, auth, and the server-rendered UI |
+| `store.py` | 498 | SQLite, FTS5, vectors, and the account binding |
+| `extract.py` | 282 | Prompt, structured output, and the salvage parser |
+| `media.py` | 254 | yt-dlp, ffprobe, ffmpeg, caption fallback |
+| `embed.py` | 166 | Vectors, cosine, and the relevance floor |
+| `instagram.py` | 165 | Webhook signature checks and DM replies |
+| `config.py` | 145 | Every knob, resolved once from the environment |
+| `pipeline.py` | 141 | The eight steps above, in order |
+| `shortcut.py` | 118 | Generates a per-account iOS shortcut |
+| `accounts.py` | 107 | scrypt hashing and signed sessions, stdlib only |
+| **tests** | **1994** | 143 of them, no network calls, ~8 seconds |
+
+No framework beyond FastAPI, no ORM, no vector database, no Redis, no
+JavaScript build step. The UI is server-rendered HTML with about twenty lines of
+inline script.
+
+
+## What broke in production
+
+Eight bugs, six of which could not reproduce locally. They are the most useful
+thing in this repo.
+
+**`docker VOLUME is not supported`** — Railway rejects the directive in favour
+of its own volumes. It was only a hint anyway; Fly mounts through `fly.toml`.
+
+**`Output file does not contain any stream`** — ffmpeg asked for audio from a
+video that had none. Instagram serves a **video-only stream to datacenter IPs**
+where it gives a home connection both, so this failed in production and passed
+locally *on the same URL*. Now it probes with ffprobe first and lets the frames
+carry the note — which was already how most of these reels worked.
+
+**A session cookie without `Secure`** — the cookie holding the API key shipped
+unprotected. Railway terminates TLS at its proxy and forwards plain http, so
+`request.url.scheme` read `http` inside the container and the flag was skipped.
+Fixed by trusting `X-Forwarded-Proto` from the platform proxy. Locally the
+scheme really *is* http, so the behaviour looked correct.
+
+**Out of memory, three times in a row** — two reels retried together each built
+their own `WhisperModel`. `lru_cache` does not serialise a concurrent miss, so
+the cache was no protection, and the model *is* the memory. Transcription now
+holds a lock across both the load and the decode, because `segments` is a
+generator and releasing after the load would leave two decodes overlapping.
+
+**`did not return a usable note`** — a reasoning model narrates before it
+answers, so the JSON arrived after prose. The parser now scans brace-matched
+candidates and takes the first that validates.
+
+**12 notes for 8 reels** — no URL dedup. One reel had been downloaded,
+transcribed and sent to the model **four separate times**. Re-sharing is how
+people find a note again, not a request to redo it.
+
+**Clearing the search did nothing** — the form carried the active category in a
+hidden field, so emptying the filter you could see re-submitted the one you
+could not. The page now states what it is filtered by, in words, with a Clear
+that returns everything.
+
+**`No video formats found`** — an image carousel has no video stream at all, so
+yt-dlp refuses it outright and the share was lost. It falls back to the post's
+caption, which on a ten-slide travel guide is where the content actually is.
+
+The pattern worth extracting: **five of these are environment differences, not
+logic errors.** Datacenter IP versus home IP, TLS terminated at a proxy versus
+served directly, concurrent requests versus one at a time. None would have been
+caught by more unit tests. They were caught by deploying and then driving the
+real thing.
+
 
 ## The honest caveat
 
@@ -468,15 +627,26 @@ once you can see the pattern rather than guessing at it now.
 ## Tests
 
 ```bash
-cd sawit && python -m pytest -q && python -m ruff check app tests
+ruff check app tests && pytest -q
 ```
 
-The suite covers storage, search and category filtering, the extraction request
-shape, webhook signature checking and payload parsing, delivery routing,
-restart recovery, and the HTTP surface. `test_schema_contract.py` runs the
-Anthropic SDK's own schema transform locally, so an SDK upgrade that would
-break extraction fails in CI rather than against a live reel.
+143 tests, no network calls, about eight seconds. They cover storage, both
+search paths, the extraction request shape, webhook signature checking,
+delivery routing, restart recovery, account isolation, password hashing and
+session signing, the generated shortcut, and the HTTP surface.
 
-It does not cover the yt-dlp download, a live Meta webhook, or a real Claude
+Three are worth reading on their own:
+
+- **`test_isolation.py`** stands in for row-level security. It drives the whole
+  note surface with two accounts, and walks every `Store` method by reflection
+  to fail if a newly added one forgets to scope itself.
+- **`test_transcribe.py`** runs four threads through the local Whisper path and
+  asserts none of them overlap — the regression test for the OOM.
+- **`test_schema_contract.py`** runs the Anthropic SDK's own schema transform
+  locally, so an SDK upgrade that would break extraction fails in CI rather
+  than against a live reel.
+
+It does not cover the yt-dlp download, a live Meta webhook, or a real model
 call — those depend on someone else's servers, so they fail loudly at runtime
-instead.
+instead. Which is exactly why six of the eight production bugs above needed a
+deploy to find: they were environment differences, not logic errors.
