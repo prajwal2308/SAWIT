@@ -37,7 +37,7 @@
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
 body{margin:0;background:var(--paper);color:var(--ink);
-  font-family:var(--body);font-size:1.0625rem;line-height:1.6;
+  font-family:var(--body);font-size:1.0625rem;line-height:1.68;
   -webkit-font-smoothing:antialiased}
 .wrap{max-width:56rem;margin:0 auto;padding:0 1.4rem}
 .narrow{max-width:44rem;margin:0 auto;padding:0 1.4rem}
@@ -50,7 +50,7 @@ code{font-family:var(--mono);font-size:.86em;background:var(--card);
 nav{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--paper) 88%,transparent);
   -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
   border-bottom:1px solid var(--rule)}
-nav .wrap{display:flex;align-items:center;gap:1.4rem;height:56px}
+nav .wrap{display:flex;align-items:center;gap:1.4rem;height:60px}
 nav .brand{font-family:var(--display);font-weight:800;letter-spacing:-.03em;font-size:1.15rem}
 nav .links{margin-left:auto;display:flex;gap:1.25rem;font-size:.9rem}
 nav .links a{color:var(--ink-2);text-decoration:none}
@@ -58,12 +58,12 @@ nav .links a:hover{color:var(--accent)}
 @media(max-width:640px){nav .links a:not(.gh){display:none}}
 
 /* hero */
-header.hero{padding:clamp(3rem,2rem+5vw,6rem) 0 clamp(2rem,1rem+3vw,3.5rem)}
+header.hero{padding:clamp(3.5rem,2.5rem+5vw,7rem) 0 clamp(3.5rem,2.5rem+4vw,5.5rem)}
 h1{font-family:var(--display);font-weight:800;
   font-size:clamp(2.3rem,1.4rem+4vw,3.9rem);line-height:1.03;letter-spacing:-.038em;
   margin:0 0 1rem;text-wrap:balance;max-width:20ch}
-.sub{font-size:clamp(1.1rem,1rem+.5vw,1.35rem);color:var(--ink-2);
-  margin:0 0 1.9rem;max-width:36rem;line-height:1.45}
+.sub{font-size:clamp(1.12rem,1rem+.55vw,1.4rem);color:var(--ink-2);
+  margin:0 0 2.4rem;max-width:36rem;line-height:1.5}
 .cta{display:flex;flex-wrap:wrap;gap:.65rem}
 .btn{display:inline-flex;align-items:center;gap:.45rem;
   padding:.7rem 1.2rem;border-radius:.6rem;font-weight:600;font-size:.95rem;
@@ -72,10 +72,10 @@ h1{font-family:var(--display);font-weight:800;
 .btn:active{transform:scale(.97)}
 .btn.primary{background:var(--ink);color:var(--paper);border-color:var(--ink)}
 
-.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;margin-top:2.6rem;
+.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;margin-top:3.4rem;
   background:var(--rule);border:1px solid var(--rule);border-radius:.7rem;overflow:hidden}
 @media(min-width:44rem){.stats{grid-template-columns:repeat(4,1fr)}}
-.stat{background:var(--card);padding:1rem 1.1rem}
+.stat{background:var(--card);padding:1.2rem 1.3rem}
 .stat b{display:block;font-family:var(--display);font-weight:700;font-size:1.55rem;
   letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
 .stat span{font-family:var(--mono);font-size:.66rem;letter-spacing:.09em;
@@ -83,30 +83,32 @@ h1{font-family:var(--display);font-weight:800;
 
 /* status */
 .status{border:1px solid var(--rule-2);border-left:3px solid var(--warm);
-  background:var(--card);border-radius:.6rem;padding:1.05rem 1.2rem;margin:2.6rem 0 0;
+  background:var(--card);border-radius:.6rem;padding:1.3rem 1.45rem;margin:3.4rem 0 0;
   font-size:.97rem;color:var(--ink-2)}
 .status b{color:var(--ink)}
 
 /* sections */
-section{padding:clamp(2.6rem,2rem+2vw,4rem) 0}
+section{padding:clamp(4rem,3rem+4vw,7rem) 0}
+section + section{border-top:1px solid var(--rule)}
 h2{font-family:var(--display);font-weight:700;
-  font-size:clamp(1.5rem,1.2rem+1.3vw,2.05rem);line-height:1.14;letter-spacing:-.03em;
-  margin:0 0 .7rem;text-wrap:balance}
-h3{font-family:var(--display);font-weight:700;font-size:1.1rem;letter-spacing:-.02em;
-  margin:2rem 0 .4rem}
-p{margin:0 0 1rem;max-width:44rem}
-.lede{color:var(--ink-2);font-size:1.08rem;margin-bottom:1.6rem}
+  font-size:clamp(1.6rem,1.25rem+1.5vw,2.25rem);line-height:1.12;letter-spacing:-.03em;
+  margin:0 0 1rem;text-wrap:balance}
+h3{font-family:var(--display);font-weight:700;font-size:1.15rem;letter-spacing:-.02em;
+  margin:3.2rem 0 .7rem}
+p{margin:0 0 1.25rem;max-width:44rem}
+.lede{color:var(--ink-2);font-size:1.1rem;line-height:1.55;margin-bottom:2.2rem}
 
 /* dark band */
 .band{background:var(--screen);color:var(--on-dark);
-  padding:clamp(2.4rem,2rem+2vw,3.6rem) 0;margin:clamp(2rem,1rem+2vw,3rem) 0}
+  padding:clamp(4rem,3rem+4vw,6.5rem) 0;margin:0}
 .band h2{color:var(--on-dark)}
 .band p{color:var(--on-dark-dim)}
 .band code{background:rgba(255,255,255,.07);border-color:rgba(255,255,255,.14);color:#dfe6ef}
 
 /* code */
 pre{background:var(--card);border:1px solid var(--rule);border-radius:.6rem;
-  padding:1rem 1.1rem;overflow-x:auto;margin:0 0 1.1rem;font-size:.83rem;line-height:1.55}
+  padding:1.25rem 1.35rem;overflow-x:auto;margin:1.6rem 0 1.6rem;
+  font-size:.83rem;line-height:1.6}
 .band pre{background:rgba(255,255,255,.045);border-color:rgba(255,255,255,.1);color:#dfe6ef}
 pre code{background:none;border:none;padding:0;font-size:inherit;white-space:pre}
 .k{color:var(--accent);font-weight:600}
@@ -115,10 +117,10 @@ pre code{background:none;border:none;padding:0;font-size:inherit;white-space:pre
 .band .s{color:#5fce9f}
 
 /* tables */
-.tw{overflow-x:auto;margin:0 0 1.3rem;border:1px solid var(--rule);border-radius:.6rem}
+.tw{overflow-x:auto;margin:1.8rem 0;border:1px solid var(--rule);border-radius:.6rem}
 table{border-collapse:collapse;width:100%;font-size:.93rem;background:var(--card)}
 .band table{background:rgba(255,255,255,.03)}
-th,td{text-align:left;padding:.7rem .95rem;border-bottom:1px solid var(--rule);vertical-align:top}
+th,td{text-align:left;padding:.85rem 1.05rem;border-bottom:1px solid var(--rule);vertical-align:top}
 .band th,.band td{border-color:rgba(255,255,255,.1)}
 th{font-family:var(--display);font-weight:700;font-size:.7rem;letter-spacing:.08em;
   text-transform:uppercase;color:var(--ink-3);white-space:nowrap}
@@ -127,7 +129,7 @@ tr:last-child td{border-bottom:none}
 td.mono,.tw td code{font-family:var(--mono);font-size:.8rem}
 
 /* the frame comparison */
-.vs{display:grid;gap:.9rem;margin:1.5rem 0}
+.vs{display:grid;gap:1rem;margin:2.2rem 0}
 @media(min-width:44rem){.vs{grid-template-columns:1fr 1fr}}
 .vs>div{border-radius:.7rem;padding:1.1rem 1.2rem;border:1px solid var(--rule)}
 .vs .bad{background:var(--warm-soft);border-color:color-mix(in srgb,var(--warm) 30%,transparent)}
@@ -139,16 +141,16 @@ td.mono,.tw td code{font-family:var(--mono);font-size:.8rem}
 .vs .out{font-family:var(--mono);font-size:.8rem;line-height:1.55}
 
 /* cards */
-.cards{display:grid;gap:.9rem;margin:1.5rem 0}
+.cards{display:grid;gap:1rem;margin:2rem 0}
 @media(min-width:44rem){.cards{grid-template-columns:repeat(3,1fr)}}
-.card{background:var(--card);border:1px solid var(--rule);border-radius:.7rem;padding:1.1rem 1.2rem}
+.card{background:var(--card);border:1px solid var(--rule);border-radius:.7rem;padding:1.3rem 1.4rem}
 .band .card{background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.1)}
 .card h4{font-family:var(--display);font-weight:700;font-size:1rem;letter-spacing:-.02em;margin:0 0 .35rem}
 .card p{font-size:.93rem;line-height:1.5;color:var(--ink-2);margin:0;max-width:none}
 .band .card p{color:var(--on-dark-dim)}
 
 /* bug list */
-.bug{border-left:2px solid var(--rule-2);padding:0 0 0 1.1rem;margin:0 0 1.5rem}
+.bug{border-left:2px solid var(--rule-2);padding:0 0 0 1.25rem;margin:0 0 2rem}
 .band .bug{border-color:rgba(255,255,255,.2)}
 .bug .sym{font-family:var(--mono);font-size:.83rem;color:#ff9d7a;margin:0 0 .35rem}
 .bug p{font-size:.95rem;margin:0;max-width:46rem}
@@ -159,9 +161,9 @@ figcaption{font-family:var(--mono);font-size:.72rem;line-height:1.55;
   color:var(--on-dark-dim);margin-top:1rem;text-align:center}
 
 ul.plain{margin:0 0 1rem;padding-left:1.15rem;max-width:44rem}
-ul.plain li{margin-bottom:.5rem}
+ul.plain li{margin-bottom:.85rem}
 
-footer{border-top:1px solid var(--rule);padding:2.2rem 0 3.5rem;margin-top:2rem;
+footer{border-top:1px solid var(--rule);padding:2.6rem 0 4rem;margin-top:0;
   color:var(--ink-3);font-size:.9rem}
 footer a{color:var(--ink-2)}
 .foot{display:flex;flex-wrap:wrap;gap:1.2rem;align-items:baseline}
