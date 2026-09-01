@@ -1,30 +1,105 @@
-# Sawit
+<h1 align="center">Sawit</h1>
 
-*Saw it for you.*
+<p align="center"><em>Saw it for you.</em></p>
 
-Send a reel to it. Get the point back. Never rewatch.
+<p align="center">
+  <strong>You already save the reel. Now you can read it.</strong><br>
+  Share an Instagram reel &rarr; get the steps, the numbers and the caveats back as a
+  searchable note, in about a minute.
+</p>
 
-> **Status: finished, not maintained.** It works end to end and is deployed —
-> shared reels become searchable notes in about a minute. Development stopped
-> because the honest answer to "would I open this every day?" turned out to be
-> no: Instagram's own Saved folder is where people already look, and no amount
-> of polish moves a habit that is not there. The code is here because the parts
-> that were hard to get right — reading text off frames, meaning-based search,
-> per-account isolation, and eight production-only bugs — are worth more written
-> down than deleted. Issues and forks welcome; expect no roadmap.
+<p align="center">
+  <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white">
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white">
+  <img alt="SQLite FTS5" src="https://img.shields.io/badge/SQLite-FTS5%20%2B%20vectors-003B57?logo=sqlite&logoColor=white">
+  <img alt="faster-whisper" src="https://img.shields.io/badge/ASR-faster--whisper-5A29E4">
+  <img alt="NVIDIA NIM" src="https://img.shields.io/badge/LLM-NVIDIA%20NIM-76B900?logo=nvidia&logoColor=white">
+  <img alt="143 tests" src="https://img.shields.io/badge/tests-143%20passing-2ea44f">
+  <img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue">
+</p>
 
-Deliberately **not** an App Store app. There are two ways in, and neither needs
-an Apple Developer account, a Mac, or App Store review.
+---
 
-**1. Send it as a DM (best).** The account is an Instagram professional account.
-You share a reel to it exactly like sending it to a friend — same gesture, same
-place in the share sheet, never leaving Instagram — and the takeaway comes back
-as a reply in that same thread. Meta's webhook hands over the media directly, so
-there is no scraping and nothing to break.
+> **Status: finished, not maintained.** It works end to end and was deployed for
+> a month &mdash; shared reels became searchable notes in about a minute.
+> Development stopped because the honest answer to *"would I open this every
+> day?"* turned out to be **no**: Instagram&rsquo;s own Saved folder is where
+> people already look, and no amount of polish moves a habit that is not there.
+> The code is public because the parts that were hard to get right &mdash;
+> reading text off video frames, meaning-based search, per-account isolation,
+> and eight production-only bugs &mdash; are worth more written down than
+> deleted. Forks welcome; expect no roadmap.
 
-**2. The iOS share sheet (fallback).** A Shortcut posts the link to the server
-and closes instantly; the answer arrives as a push notification. This covers
-Facebook reels, and anything else with a URL.
+## The problem
+
+Instagram&rsquo;s Saved folder is a wall of thumbnails. **No search. No text. No
+way to ask "what was that budget split?" six months later.** So people do the
+next best thing &mdash; share reels to themselves in DMs &mdash; and end up with
+a second pile they also cannot query.
+
+The useful part of a reel is about forty seconds long. Sawit extracts it.
+
+| | |
+|---|---|
+| **~60s** | share &rarr; finished note |
+| **0s** | how long the share sheet waits on you |
+| **$0** | marginal cost per reel |
+| **0** | words a semantic query needs to share with the note it finds |
+
+## What it actually produces
+
+A reel with **no spoken audio at all**, whose content is a caption over music:
+
+```json
+{
+  "title":    "Allocate monthly net income using a 55/5/10/15/15 split",
+  "category": "finance",
+  "one_liner":"Divide net income into 55% essentials, 5% guilt-free spending,
+               10% debt or investing, 15% short-term savings, 15% long-term.",
+  "steps":    ["Multiply monthly net income by 0.55 for essential expenses",
+               "Multiply by 0.05 for guilt-free spending money",
+               "Multiply by 0.1 and apply to debt, or invest it",
+               "Multiply by 0.15 for short-term goals",
+               "Multiply by 0.15 and invest for long-term wealth"],
+  "key_facts":[{"label": "Essential expenses share", "value": "55%"},
+               {"label": "Total allocation",         "value": "100%"}],
+  "caveats":  ["Based on monthly net income after taxes, not gross"]
+}
+```
+
+**The transcript for that reel was empty.** Every field above was read off the
+video frames.
+
+## The stack, and why each piece
+
+| Layer | Choice | Why this one |
+|---|---|---|
+| **API** | FastAPI | Returns `202` in ~0s and does the work in a background task, so the iOS share sheet never waits |
+| **Fetch** | yt-dlp | Handles Instagram, Facebook, TikTok and anything with a URL; falls back to the caption when a post is an image carousel |
+| **Render** | ffmpeg / ffprobe | 16 kHz mono wav for Whisper, plus 8 JPEG stills sampled inside the clip |
+| **ASR** | faster-whisper, `int8` on CPU | Free and local. `int8` is what makes it viable on a small box; serialised behind a lock because the model *is* the memory budget |
+| **Extraction** | **`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`** via NVIDIA NIM | A 30B mixture-of-experts with ~3B active, multimodal, on a free tier. Chosen for one specific reason &mdash; see below |
+| **Embeddings** | **`nvidia/nemotron-3-embed-1b`**, 2048-dim | Same endpoint and same key as extraction, so semantic search adds no second service |
+| **Storage** | SQLite + FTS5 + float32 vectors | One file. No ORM, no vector database, no Redis |
+| **Auth** | `hashlib.scrypt` + `hmac`, stdlib only | Nothing worth a dependency to do what the standard library already does correctly |
+| **UI** | Server-rendered HTML | ~20 lines of inline JS. No build step |
+
+### Why the model is not interchangeable
+
+**It takes 12 images per request.** Both `llama-3.2-vision` models take exactly
+**one**, and gemma-3 and phi-3-vision returned 404 on that endpoint. This is the
+single most load-bearing decision in the project, because a reel puts its numbers
+on screen *across the whole clip*:
+
+| Frames sent | What came back |
+|---|---|
+| **1** &nbsp;(`llama-3.2-90b-vision`) | title `"Gamble King"`, summary `"Gamble King"`, tags `["Gamble King"]` |
+| **8** &nbsp;(`nemotron-3-nano-omni`) | `"Slang wordplay — Stu(dies/died/dying) against Smo(king), Drin(king), Gamble(king)"`, takeaways empty, category `other` |
+
+Same reel, same 14-character transcript. The only difference is how much of the
+screen the model was allowed to see &mdash; and whether the prompt let it say
+*there is nothing here.*
+
 
 ## Architecture
 
@@ -244,47 +319,6 @@ before pointing it at other people. Prefer the DM path wherever it works.
 Nothing here rehosts video on either path. Only derived notes, one transcript,
 and one thumbnail per reel are stored.
 
-## Which model writes the notes
-
-Two backends, set with `SAWIT_LLM`.
-
-**`anthropic`** (default) — the better extractor, noticeably so at the one job
-that matters most here: reconstructing a calculation into `steps` from a messy
-transcript. Needs `ANTHROPIC_API_KEY`.
-
-**`nvidia`** — any OpenAI-compatible endpoint. A free key from
-[build.nvidia.com](https://build.nvidia.com) (starts with `nvapi-`) gets you
-open models on NVIDIA's hosted inference at no cost:
-
-```bash
-SAWIT_LLM=nvidia
-NVIDIA_API_KEY=nvapi-...
-SAWIT_MODEL=nvidia/nemotron-3-nano-omni-30b-a3b-reasoning   # the default
-```
-
-**Pick a multimodal model, and check how many images it takes.** Frames go to
-the model alongside the transcript because reels put the numbers on screen and
-never say them out loud — in testing, *every* reel transcribed to nothing and
-the notes were written entirely from the frames. The default is chosen because
-it accepts **12 images per request**; both `llama-3.2-vision` models accept
-exactly one, which is not enough to read a reel whose text changes as it plays.
-At one frame the extractor returned the words on a single card as the title, the
-summary and every tag. If you deliberately choose a text-only model, set
-`SAWIT_VISION=false` so it is not sent images it cannot read.
-
-Structured output is requested as a strict JSON schema, with references inlined
-because that is where open models' constrained decoding tends to fall over. If a
-model rejects `json_schema` outright, it retries in plain JSON mode with the
-schema in the prompt — so a weaker model degrades instead of failing the note.
-
-`NVIDIA_BASE_URL` points anywhere OpenAI-compatible, so this backend is not
-actually NVIDIA-specific.
-
-**Expect a quality gap.** Open models handle the summary fine. Where they lose
-to Claude is the calculation: getting every step, in order, with the right
-numbers. That is the field this whole app exists for, so it is worth re-checking
-a few finance reels by hand before trusting it.
-
 ## Install
 
 You need **Python 3.12+**, **ffmpeg** on `PATH`, and a free API key from
@@ -345,6 +379,38 @@ ruff check app tests && pytest -q
 
 143 tests, no network calls, a couple of seconds. `tests/test_isolation.py` is
 the one worth reading first — it is what stands in for row-level security.
+
+## Swapping the model
+
+Two backends, set with `SAWIT_LLM`.
+
+**`nvidia`** &mdash; any OpenAI-compatible endpoint. A free key from
+[build.nvidia.com](https://build.nvidia.com) gets you open models at no cost:
+
+```bash
+SAWIT_LLM=nvidia
+NVIDIA_API_KEY=nvapi-...
+SAWIT_MODEL=nvidia/nemotron-3-nano-omni-30b-a3b-reasoning   # the default
+SAWIT_EMBED_MODEL=nvidia/nemotron-3-embed-1b                # the default
+SAWIT_FRAMES=8                                              # check your model's image cap
+```
+
+`NVIDIA_BASE_URL` points anywhere OpenAI-compatible, so this backend is not
+actually NVIDIA-specific &mdash; it is the shape of the API, not the vendor.
+
+**`anthropic`** &mdash; the better extractor, noticeably so at reconstructing a
+calculation into `steps` from a messy transcript. Needs `ANTHROPIC_API_KEY`.
+
+**Before you swap, check two things.** How many images the model accepts per
+request &mdash; one is not enough, and it is not usually documented, so send two
+and see what happens. And whether it is a *reasoning* model, which will narrate
+before answering; the salvage parser handles that, but a non-reasoning model
+returns cleaner JSON to begin with.
+
+Structured output is requested as a strict JSON schema with references inlined,
+because `$ref`/`$defs` are where open models' constrained decoding falls over.
+If a model rejects `json_schema` outright it retries in plain JSON mode with the
+schema in the prompt, so a weaker model degrades instead of failing the note.
 
 ## Setting up the DM path
 
@@ -610,6 +676,32 @@ ASR_MODEL=whisper-1
 ```
 
 Nothing else changes, and `fly.toml` can then drop to `shared-cpu-1x` / 512 MB.
+
+## What this project actually taught
+
+**Five of the eight production bugs were environment differences, not logic
+errors.** A datacenter IP gets a different Instagram response than a home
+connection. TLS terminated at a proxy makes the app see plain http. Two
+concurrent requests build two copies of a model that one request never
+duplicates. None of these are findable by writing more unit tests; they are
+findable by deploying and then driving the real thing.
+
+**The prompt was as load-bearing as the model.** The same model, on the same
+reel, went from emitting `Gamble(king): Gamble(king)` as a "key fact" to
+correctly returning empty fields &mdash; because the instructions changed to say
+that an empty field is a correct answer. Model capability was never the
+bottleneck; permission to say nothing was.
+
+**Enforce invariants where they cannot be forgotten.** Account isolation lives
+in the constructor of `Store`, not in a check each endpoint remembers to write.
+That is why adding routes did not add holes, and why a reflection test can
+assert the property for methods that do not exist yet.
+
+**The hardest problem was not technical.** Getting the pipeline right took a
+day. Getting a person to press one button repeatedly is the part that did not
+work, and no architecture fixes it. The Shortcut went from fifteen steps to two
+taps and one paste; the honest read is that even two taps is more friction than
+a habit that already exists elsewhere.
 
 ## Deliberately not built yet
 
