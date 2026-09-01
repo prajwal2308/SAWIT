@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <a href="https://prajwal2308.github.io/SAWIT/"><strong>Read the project page &rarr;</strong></a>
+</p>
+
+<p align="center">
   <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white">
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white">
   <img alt="SQLite FTS5" src="https://img.shields.io/badge/SQLite-FTS5%20%2B%20vectors-003B57?logo=sqlite&logoColor=white">
