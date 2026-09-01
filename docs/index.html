@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sawit — Instagram reels, turned into notes you can search</title>
+<meta name="description" content="Share an Instagram reel, get the steps, numbers and caveats back as a searchable note. Reads the text off the video frames, because most reels never say it out loud.">
+<meta property="og:title" content="Sawit — reels, in words you can search">
+<meta property="og:description" content="A multimodal pipeline that reads the text off video frames. FastAPI, faster-whisper, NVIDIA NIM, SQLite FTS5 + embeddings.">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@500;700;800&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root{
+  --paper:#fafafb; --card:#fff; --screen:#0e1116;
+  --ink:#15171c; --ink-2:#454b56; --ink-3:#6d7581;
+  --rule:#e4e7ec; --rule-2:#cfd5dd;
+  --accent:#1a4fd6; --accent-soft:#e7edfd;
+  --mark:#ffe98a;
+  --warm:#b4471f; --warm-soft:#fbeee7;
+  --ok:#0f7a52; --ok-soft:#e2f4ec;
+  --on-dark:#eef1f6; --on-dark-dim:#8b96a5;
+  --display:"Schibsted Grotesk","Helvetica Neue",Arial,sans-serif;
+  --body:"Source Sans 3",-apple-system,BlinkMacSystemFont,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --paper:#0c0e12; --card:#151920; --screen:#07090c;
+  --ink:#eef1f6; --ink-2:#b6bfcb; --ink-3:#8791a0;
+  --rule:#242a34; --rule-2:#333b47;
+  --accent:#8aa9ff; --accent-soft:#182042;
+  --mark:#6b5a12;
+  --warm:#e88a5f; --warm-soft:#2a1a12;
+  --ok:#5fce9f; --ok-soft:#0f2a20;
+}}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font-family:var(--body);font-size:1.0625rem;line-height:1.6;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:56rem;margin:0 auto;padding:0 1.4rem}
+.narrow{max-width:44rem;margin:0 auto;padding:0 1.4rem}
+a{color:var(--accent)}
+mark{background:var(--mark);color:inherit;padding:.05em .15em;border-radius:2px}
+code{font-family:var(--mono);font-size:.86em;background:var(--card);
+  border:1px solid var(--rule);padding:.1em .35em;border-radius:3px}
+
+/* nav */
+nav{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--paper) 88%,transparent);
+  -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--rule)}
+nav .wrap{display:flex;align-items:center;gap:1.4rem;height:56px}
+nav .brand{font-family:var(--display);font-weight:800;letter-spacing:-.03em;font-size:1.15rem}
+nav .links{margin-left:auto;display:flex;gap:1.25rem;font-size:.9rem}
+nav .links a{color:var(--ink-2);text-decoration:none}
+nav .links a:hover{color:var(--accent)}
+@media(max-width:640px){nav .links a:not(.gh){display:none}}
+
+/* hero */
+header.hero{padding:clamp(3rem,2rem+5vw,6rem) 0 clamp(2rem,1rem+3vw,3.5rem)}
+h1{font-family:var(--display);font-weight:800;
+  font-size:clamp(2.3rem,1.4rem+4vw,3.9rem);line-height:1.03;letter-spacing:-.038em;
+  margin:0 0 1rem;text-wrap:balance;max-width:20ch}
+.sub{font-size:clamp(1.1rem,1rem+.5vw,1.35rem);color:var(--ink-2);
+  margin:0 0 1.9rem;max-width:36rem;line-height:1.45}
+.cta{display:flex;flex-wrap:wrap;gap:.65rem}
+.btn{display:inline-flex;align-items:center;gap:.45rem;
+  padding:.7rem 1.2rem;border-radius:.6rem;font-weight:600;font-size:.95rem;
+  text-decoration:none;border:1px solid var(--rule-2);color:var(--ink);background:var(--card);
+  transition:transform .12s cubic-bezier(.2,.8,.3,1)}
+.btn:active{transform:scale(.97)}
+.btn.primary{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+
+.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;margin-top:2.6rem;
+  background:var(--rule);border:1px solid var(--rule);border-radius:.7rem;overflow:hidden}
+@media(min-width:44rem){.stats{grid-template-columns:repeat(4,1fr)}}
+.stat{background:var(--card);padding:1rem 1.1rem}
+.stat b{display:block;font-family:var(--display);font-weight:700;font-size:1.55rem;
+  letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
+.stat span{font-family:var(--mono);font-size:.66rem;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--ink-3)}
+
+/* status */
+.status{border:1px solid var(--rule-2);border-left:3px solid var(--warm);
+  background:var(--card);border-radius:.6rem;padding:1.05rem 1.2rem;margin:2.6rem 0 0;
+  font-size:.97rem;color:var(--ink-2)}
+.status b{color:var(--ink)}
+
+/* sections */
+section{padding:clamp(2.6rem,2rem+2vw,4rem) 0}
+h2{font-family:var(--display);font-weight:700;
+  font-size:clamp(1.5rem,1.2rem+1.3vw,2.05rem);line-height:1.14;letter-spacing:-.03em;
+  margin:0 0 .7rem;text-wrap:balance}
+h3{font-family:var(--display);font-weight:700;font-size:1.1rem;letter-spacing:-.02em;
+  margin:2rem 0 .4rem}
+p{margin:0 0 1rem;max-width:44rem}
+.lede{color:var(--ink-2);font-size:1.08rem;margin-bottom:1.6rem}
+
+/* dark band */
+.band{background:var(--screen);color:var(--on-dark);
+  padding:clamp(2.4rem,2rem+2vw,3.6rem) 0;margin:clamp(2rem,1rem+2vw,3rem) 0}
+.band h2{color:var(--on-dark)}
+.band p{color:var(--on-dark-dim)}
+.band code{background:rgba(255,255,255,.07);border-color:rgba(255,255,255,.14);color:#dfe6ef}
+
+/* code */
+pre{background:var(--card);border:1px solid var(--rule);border-radius:.6rem;
+  padding:1rem 1.1rem;overflow-x:auto;margin:0 0 1.1rem;font-size:.83rem;line-height:1.55}
+.band pre{background:rgba(255,255,255,.045);border-color:rgba(255,255,255,.1);color:#dfe6ef}
+pre code{background:none;border:none;padding:0;font-size:inherit;white-space:pre}
+.k{color:var(--accent);font-weight:600}
+.band .k{color:#8aa9ff}
+.s{color:var(--ok)}
+.band .s{color:#5fce9f}
+
+/* tables */
+.tw{overflow-x:auto;margin:0 0 1.3rem;border:1px solid var(--rule);border-radius:.6rem}
+table{border-collapse:collapse;width:100%;font-size:.93rem;background:var(--card)}
+.band table{background:rgba(255,255,255,.03)}
+th,td{text-align:left;padding:.7rem .95rem;border-bottom:1px solid var(--rule);vertical-align:top}
+.band th,.band td{border-color:rgba(255,255,255,.1)}
+th{font-family:var(--display);font-weight:700;font-size:.7rem;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--ink-3);white-space:nowrap}
+.band th{color:var(--on-dark-dim)}
+tr:last-child td{border-bottom:none}
+td.mono,.tw td code{font-family:var(--mono);font-size:.8rem}
+
+/* the frame comparison */
+.vs{display:grid;gap:.9rem;margin:1.5rem 0}
+@media(min-width:44rem){.vs{grid-template-columns:1fr 1fr}}
+.vs>div{border-radius:.7rem;padding:1.1rem 1.2rem;border:1px solid var(--rule)}
+.vs .bad{background:var(--warm-soft);border-color:color-mix(in srgb,var(--warm) 30%,transparent)}
+.vs .good{background:var(--ok-soft);border-color:color-mix(in srgb,var(--ok) 30%,transparent)}
+.vs h4{font-family:var(--mono);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;
+  margin:0 0 .6rem}
+.vs .bad h4{color:var(--warm)} .vs .good h4{color:var(--ok)}
+.vs p{font-size:.93rem;line-height:1.5;margin:0 0 .4rem;max-width:none}
+.vs .out{font-family:var(--mono);font-size:.8rem;line-height:1.55}
+
+/* cards */
+.cards{display:grid;gap:.9rem;margin:1.5rem 0}
+@media(min-width:44rem){.cards{grid-template-columns:repeat(3,1fr)}}
+.card{background:var(--card);border:1px solid var(--rule);border-radius:.7rem;padding:1.1rem 1.2rem}
+.band .card{background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.1)}
+.card h4{font-family:var(--display);font-weight:700;font-size:1rem;letter-spacing:-.02em;margin:0 0 .35rem}
+.card p{font-size:.93rem;line-height:1.5;color:var(--ink-2);margin:0;max-width:none}
+.band .card p{color:var(--on-dark-dim)}
+
+/* bug list */
+.bug{border-left:2px solid var(--rule-2);padding:0 0 0 1.1rem;margin:0 0 1.5rem}
+.band .bug{border-color:rgba(255,255,255,.2)}
+.bug .sym{font-family:var(--mono);font-size:.83rem;color:#ff9d7a;margin:0 0 .35rem}
+.bug p{font-size:.95rem;margin:0;max-width:46rem}
+
+figure{margin:0}
+figure svg{display:block;width:100%;height:auto}
+figcaption{font-family:var(--mono);font-size:.72rem;line-height:1.55;
+  color:var(--on-dark-dim);margin-top:1rem;text-align:center}
+
+ul.plain{margin:0 0 1rem;padding-left:1.15rem;max-width:44rem}
+ul.plain li{margin-bottom:.5rem}
+
+footer{border-top:1px solid var(--rule);padding:2.2rem 0 3.5rem;margin-top:2rem;
+  color:var(--ink-3);font-size:.9rem}
+footer a{color:var(--ink-2)}
+.foot{display:flex;flex-wrap:wrap;gap:1.2rem;align-items:baseline}
+.foot .sp{margin-left:auto}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+
+<nav><div class="wrap">
+  <span class="brand">Sawit</span>
+  <span class="links">
+    <a href="#problem">Why</a>
+    <a href="#output">Output</a>
+    <a href="#how">How</a>
+    <a href="#bugs">What broke</a>
+    <a href="#install">Install</a>
+    <a class="gh" href="https://github.com/prajwal2308/SAWIT">GitHub &rarr;</a>
+  </span>
+</div></nav>
+
+<header class="hero"><div class="wrap">
+  <h1>You already save the reel. Now you can read it.</h1>
+  <p class="sub">Share an Instagram reel and get the steps, the numbers and the caveats back as
+  a searchable note &mdash; in about a minute, without ever rewatching it.</p>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/prajwal2308/SAWIT">View the source</a>
+    <a class="btn" href="#how">How it works</a>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><b>~60s</b><span>Share &rarr; note</span></div>
+    <div class="stat"><b>0s</b><span>You wait</span></div>
+    <div class="stat"><b>143</b><span>Tests</span></div>
+    <div class="stat"><b>$0</b><span>Per reel</span></div>
+  </div>
+
+  <p class="status"><b>Finished, not maintained.</b> It works end to end and ran in production
+  for a month. Development stopped because the honest answer to <em>&ldquo;would I open this
+  every day?&rdquo;</em> was no &mdash; Instagram&rsquo;s Saved folder is where people already
+  look, and no amount of polish moves a habit that isn&rsquo;t there. The code is public because
+  the hard parts are worth more written down than deleted.</p>
+</div></header>
+
+<section id="problem"><div class="wrap">
+  <h2>The problem was never saving. It&rsquo;s finding.</h2>
+  <p class="lede">Instagram&rsquo;s Saved folder is a wall of thumbnails. No search, no text, no
+  way to ask <em>&ldquo;what was that budget split?&rdquo;</em> six months later.</p>
+  <p>So people do the next best thing &mdash; they share reels to themselves in DMs &mdash; and
+  end up with a second pile they also can&rsquo;t query. The useful part of a reel is about forty
+  seconds long. Sawit extracts it and makes it searchable
+  <mark>by meaning, not just by keyword</mark>.</p>
+
+  <div class="tw"><table>
+    <thead><tr><th>You ask</th><th>It finds</th><th>Shared words</th></tr></thead>
+    <tbody>
+      <tr><td>how should i split my salary</td><td>Allocate monthly net income using a 55/5/10/15/15 split</td><td><b>0</b></td></tr>
+      <tr><td>something sweet to cook</td><td>Mango Sago Dessert Recipe</td><td><b>0</b></td></tr>
+      <tr><td>finding candidates to hire</td><td>Juicebox: build candidate shortlists and outreach</td><td><b>0</b></td></tr>
+    </tbody>
+  </table></div>
+  <p>Real queries against a real library. Each note shares <em>not one word</em> with the question
+  that found it.</p>
+</div></section>
+
+<section id="output"><div class="wrap">
+  <h2>What it produces</h2>
+  <p class="lede">A finance reel with <strong>no spoken audio at all</strong> &mdash; a caption
+  over music. Here is the note that came back.</p>
+<pre><code>{
+  <span class="k">"title"</span>:     <span class="s">"Allocate monthly net income using a 55/5/10/15/15 split"</span>,
+  <span class="k">"category"</span>:  <span class="s">"finance"</span>,
+  <span class="k">"one_liner"</span>: <span class="s">"Divide net income into 55% essentials, 5% guilt-free spending,
+                 10% debt or investing, 15% short-term, 15% long-term."</span>,
+  <span class="k">"steps"</span>: [
+    <span class="s">"Multiply monthly net income by 0.55 for essential expenses"</span>,
+    <span class="s">"Multiply by 0.05 for guilt-free spending money"</span>,
+    <span class="s">"Multiply by 0.1 and apply to debt, or invest it"</span>,
+    <span class="s">"Multiply by 0.15 for short-term goals"</span>,
+    <span class="s">"Multiply by 0.15 and invest for long-term wealth"</span>
+  ],
+  <span class="k">"key_facts"</span>: [
+    {<span class="k">"label"</span>: <span class="s">"Essential expenses share"</span>, <span class="k">"value"</span>: <span class="s">"55%"</span>},
+    {<span class="k">"label"</span>: <span class="s">"Total allocation"</span>,        <span class="k">"value"</span>: <span class="s">"100%"</span>}
+  ],
+  <span class="k">"caveats"</span>: [<span class="s">"Based on monthly net income after taxes, not gross"</span>]
+}</code></pre>
+  <p><strong>The transcript for that reel was empty.</strong> Every field above was read off the
+  video frames.</p>
+</div></section>
+
+<div class="band" id="frames"><div class="wrap">
+  <h2>The decision the whole project turned on</h2>
+  <p>Reels put their numbers on screen and never say them out loud. So the frames aren&rsquo;t a
+  supplement to the transcript &mdash; they&rsquo;re usually the entire source. Which makes one
+  unglamorous number load-bearing: <strong>how many images the model accepts per request.</strong></p>
+
+  <div class="vs">
+    <div class="bad">
+      <h4>1 frame &middot; llama-3.2-90b-vision</h4>
+      <p class="out">title: <b>"Gamble King"</b><br>
+      summary: <b>"Gamble King"</b><br>
+      tags: <b>["Gamble King"]</b></p>
+      <p>It read one card and repeated it into every field.</p>
+    </div>
+    <div class="good">
+      <h4>8 frames &middot; nemotron-3-nano-omni</h4>
+      <p class="out">title: <b>"Slang wordplay &mdash; Stu(dies / died / dying)<br>
+      against Smo(king), Drin(king), Gamble(king)"</b><br>
+      takeaways: <b>[]</b> &nbsp; category: <b>other</b></p>
+      <p>It read the whole visual pun &mdash; and correctly returned nothing to take away, because
+      it&rsquo;s a joke.</p>
+    </div>
+  </div>
+
+  <p>Same reel. Same 14-character transcript. The only differences were how much of the screen the
+  model could see, and whether the prompt allowed it to say <em>there is nothing here</em>.
+  <mark style="background:#3d4b1f;color:#e8f0c8">The default model takes 12 images; both
+  llama-vision models take exactly one.</mark></p>
+</div></div>
+
+<section id="how"><div class="wrap">
+  <h2>How it works</h2>
+  <p class="lede">Eight stages. The share sheet never waits on any of them.</p>
+</div>
+<div class="wrap">
+  <figure>
+    <svg viewBox="0 0 900 250" role="img" aria-label="A shared link returns in under a second; downloading, transcribing and reading the reel happen afterwards inside a temporary directory, and only the note and one still are kept.">
+      <defs>
+        <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker>
+        <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#1a4fd6"/></marker>
+      </defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.4">
+        <rect x="8" y="24" width="118" height="42" rx="7"/>
+        <rect x="196" y="24" width="118" height="42" rx="7"/>
+      </g>
+      <text x="67" y="42" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor" font-family="system-ui">Share sheet</text>
+      <text x="67" y="57" text-anchor="middle" font-size="10.5" fill="#6d7581" font-family="system-ui">the link only</text>
+      <text x="255" y="42" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor" font-family="system-ui">FastAPI</text>
+      <text x="255" y="57" text-anchor="middle" font-size="10.5" fill="#6d7581" font-family="system-ui">writes a row</text>
+      <line x1="126" y1="45" x2="190" y2="45" stroke="currentColor" stroke-width="1.4" marker-end="url(#a)"/>
+      <text x="158" y="37" text-anchor="middle" font-size="10" fill="#6d7581" font-family="ui-monospace">POST</text>
+      <line x1="314" y1="45" x2="420" y2="45" stroke="#1a4fd6" stroke-width="2" marker-end="url(#b)"/>
+      <text x="367" y="37" text-anchor="middle" font-size="10" fill="#1a4fd6" font-family="ui-monospace">202 · 0s</text>
+      <text x="367" y="59" text-anchor="middle" font-size="10" fill="#1a4fd6" font-family="ui-monospace">sheet closes</text>
+
+      <rect x="8" y="98" width="648" height="106" rx="9" fill="none" stroke="#9aa4b2" stroke-width="1.2" stroke-dasharray="5 4"/>
+      <text x="16" y="92" font-size="10" fill="#6d7581" font-family="ui-monospace">temporary directory — deleted when the note is written</text>
+      <g fill="none" stroke="currentColor" stroke-width="1.4">
+        <rect x="24" y="128" width="112" height="46" rx="7"/>
+        <rect x="168" y="128" width="112" height="46" rx="7"/>
+        <rect x="312" y="128" width="112" height="46" rx="7"/>
+        <rect x="456" y="128" width="184" height="46" rx="7"/>
+      </g>
+      <text x="80" y="147" text-anchor="middle" font-size="11.5" font-weight="600" fill="currentColor" font-family="system-ui">yt-dlp</text>
+      <text x="80" y="162" text-anchor="middle" font-size="10" fill="#6d7581" font-family="system-ui">downloads the mp4</text>
+      <text x="224" y="147" text-anchor="middle" font-size="11.5" font-weight="600" fill="currentColor" font-family="system-ui">ffmpeg</text>
+      <text x="224" y="162" text-anchor="middle" font-size="10" fill="#6d7581" font-family="system-ui">8 stills + 16kHz wav</text>
+      <text x="368" y="147" text-anchor="middle" font-size="11.5" font-weight="600" fill="currentColor" font-family="system-ui">whisper</text>
+      <text x="368" y="162" text-anchor="middle" font-size="10" fill="#6d7581" font-family="system-ui">int8, on this box</text>
+      <text x="548" y="147" text-anchor="middle" font-size="11.5" font-weight="600" fill="currentColor" font-family="system-ui">multimodal model</text>
+      <text x="548" y="162" text-anchor="middle" font-size="10" fill="#6d7581" font-family="system-ui">reads the screen, not just the words</text>
+      <line x1="136" y1="151" x2="162" y2="151" stroke="currentColor" stroke-width="1.4" marker-end="url(#a)"/>
+      <line x1="280" y1="151" x2="306" y2="151" stroke="currentColor" stroke-width="1.4" marker-end="url(#a)"/>
+      <line x1="424" y1="151" x2="450" y2="151" stroke="currentColor" stroke-width="1.4" marker-end="url(#a)"/>
+      <path d="M255 68 L255 151 L18 151" fill="none" stroke="currentColor" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#a)"/>
+      <text x="180" y="118" font-size="10" fill="#6d7581" font-family="ui-monospace">in the background</text>
+
+      <g fill="none" stroke="#1a4fd6" stroke-width="1.7">
+        <rect x="700" y="106" width="192" height="46" rx="7"/>
+        <rect x="700" y="166" width="192" height="46" rx="7"/>
+      </g>
+      <text x="796" y="125" text-anchor="middle" font-size="12" font-weight="600" fill="#1a4fd6" font-family="system-ui">The note</text>
+      <text x="796" y="140" text-anchor="middle" font-size="10" fill="#6d7581" font-family="system-ui">searchable + 1 still + vector</text>
+      <text x="796" y="185" text-anchor="middle" font-size="12" font-weight="600" fill="#1a4fd6" font-family="system-ui">Push to your phone</text>
+      <text x="796" y="200" text-anchor="middle" font-size="10" fill="#6d7581" font-family="system-ui">tappable</text>
+      <line x1="640" y1="151" x2="694" y2="132" stroke="#1a4fd6" stroke-width="1.8" marker-end="url(#b)"/>
+      <line x1="796" y1="152" x2="796" y2="160" stroke="#1a4fd6" stroke-width="1.8" marker-end="url(#b)"/>
+      <text x="8" y="238" font-size="10.5" fill="#6d7581" font-family="system-ui">The video, the audio and all eight frames are gone by the time the note appears. Nothing is rehosted.</text>
+    </svg>
+  </figure>
+</div>
+<div class="wrap">
+  <h3>The stack, and why each piece</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Layer</th><th>Choice</th><th>Why this one</th></tr></thead>
+    <tbody>
+      <tr><td><b>API</b></td><td class="mono">FastAPI</td><td>Returns <code>202</code> in ~0s and works in a background task, so the share sheet never blocks</td></tr>
+      <tr><td><b>Fetch</b></td><td class="mono">yt-dlp</td><td>Falls back to the post caption when a share is an image carousel with no video stream</td></tr>
+      <tr><td><b>Render</b></td><td class="mono">ffmpeg / ffprobe</td><td>16 kHz mono wav, plus 8 stills sampled inside the clip — the first and last frames are a title card and &ldquo;follow for more&rdquo;</td></tr>
+      <tr><td><b>ASR</b></td><td class="mono">faster-whisper, int8</td><td>Free and local. Serialised behind a lock, because the model <em>is</em> the memory budget</td></tr>
+      <tr><td><b>Extraction</b></td><td class="mono">nemotron-3-nano-omni-30b-a3b</td><td>30B MoE, ~3B active, multimodal, free tier — and it takes <b>12 images</b> per request</td></tr>
+      <tr><td><b>Embeddings</b></td><td class="mono">nemotron-3-embed-1b</td><td>2048-dim, same endpoint and key as extraction, so semantic search adds no second service</td></tr>
+      <tr><td><b>Storage</b></td><td class="mono">SQLite + FTS5 + vectors</td><td>One file. No ORM, no vector database, no Redis</td></tr>
+      <tr><td><b>Auth</b></td><td class="mono">hashlib.scrypt + hmac</td><td>Standard library only. Signed, expiring sessions; per-account API keys</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Three things that took real work</h3>
+  <div class="cards">
+    <div class="card"><h4>Typed output, three ways</h4>
+      <p>One Pydantic schema, enforced via Anthropic&rsquo;s parser, strict <code>json_schema</code>
+      with <code>$ref</code>s inlined, or plain JSON mode — because that&rsquo;s where open models&rsquo;
+      constrained decoding falls over.</p></div>
+    <div class="card"><h4>A salvage parser</h4>
+      <p>Reasoning models narrate before they answer. Rather than losing the reel to a preamble, it
+      scans brace-matched candidates and takes the first that validates.</p></div>
+    <div class="card"><h4>Isolation in the constructor</h4>
+      <p>SQLite has no row-level security, so a <code>Store</code> is <em>bound to an account</em>
+      and every query filters inside. Endpoints can&rsquo;t forget a filter they never write.</p></div>
+  </div>
+</div></section>
+
+<div class="band" id="bugs"><div class="wrap">
+  <h2>Eight bugs, six of which couldn&rsquo;t reproduce locally</h2>
+  <p style="margin-bottom:2rem">The most useful thing in the repository.</p>
+
+  <div class="bug"><p class="sym">Output file does not contain any stream</p>
+    <p>Instagram serves a <b>video-only stream to datacenter IPs</b> where it gives a home
+    connection both. Failed in production, passed locally, on the same URL.</p></div>
+  <div class="bug"><p class="sym">Session cookie shipped without Secure</p>
+    <p>Railway terminates TLS at its proxy, so the app saw plain <code>http</code> inside the
+    container and skipped the flag on the cookie holding the API key.</p></div>
+  <div class="bug"><p class="sym">Out of Memory &times; 3</p>
+    <p>Two reels at once each built their own Whisper model — <code>lru_cache</code> doesn&rsquo;t
+    serialise a concurrent miss, so the cache was no protection.</p></div>
+  <div class="bug"><p class="sym">12 notes for 8 reels</p>
+    <p>No URL dedup. One reel had been downloaded, transcribed and sent to the model
+    <b>four separate times</b>.</p></div>
+  <div class="bug"><p class="sym">Clearing the search did nothing</p>
+    <p>The form carried the active category in a hidden field, so emptying the filter you could see
+    re-submitted the one you couldn&rsquo;t.</p></div>
+  <div class="bug"><p class="sym">did not return a usable note</p>
+    <p>A reasoning model put its narration before the JSON. The parser now recovers the object
+    instead of failing the reel.</p></div>
+
+  <p style="margin-top:2rem"><strong style="color:var(--on-dark)">The pattern worth extracting:</strong>
+  five of these are environment differences, not logic errors. Datacenter IP versus home IP. TLS at a
+  proxy versus served directly. Concurrent versus sequential. None are findable by writing more unit
+  tests &mdash; only by deploying and then driving the real thing.</p>
+</div></div>
+
+<section id="install"><div class="wrap">
+  <h2>Run it yourself</h2>
+  <p class="lede">Python 3.12+, ffmpeg, and a free key from build.nvidia.com. About five minutes.</p>
+<pre><code>git clone https://github.com/prajwal2308/SAWIT.git
+cd SAWIT
+python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -r requirements.txt
+
+cp .env.example .env
+python -c <span class="s">"import secrets; print('SAWIT_API_KEY=' + secrets.token_urlsafe(32))"</span>
+<span style="color:#6d7581"># put that key and your NVIDIA_API_KEY in .env, set SAWIT_LLM=nvidia</span>
+
+uvicorn app.main:app --reload</code></pre>
+  <p>Open <code>localhost:8000/?k=&lt;your key&gt;</code>. Everything else has a working default —
+  the model, the embedding model, frame count and transcription are already set to values that were
+  tested together.</p>
+  <div class="cta" style="margin-top:1.6rem">
+    <a class="btn primary" href="https://github.com/prajwal2308/SAWIT">Full README on GitHub</a>
+    <a class="btn" href="https://github.com/prajwal2308/SAWIT#architecture">Architecture</a>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>What it actually taught</h2>
+  <ul class="plain">
+    <li><strong>Five of eight bugs were environment differences.</strong> Not logic errors. No amount
+    of unit testing finds them; a deploy does.</li>
+    <li><strong>The prompt was as load-bearing as the model.</strong> The same model went from
+    emitting <code>Gamble(king): Gamble(king)</code> as a &ldquo;key fact&rdquo; to correctly
+    returning empty fields — because the instructions changed to say an empty field is a correct
+    answer. Capability was never the bottleneck; permission to say nothing was.</li>
+    <li><strong>Put invariants where they can&rsquo;t be forgotten.</strong> Account isolation lives
+    in a constructor, not in a check each endpoint remembers. Adding routes stopped adding holes.</li>
+    <li><strong>The hardest problem wasn&rsquo;t technical.</strong> The pipeline took a day. Getting
+    a person to press one button repeatedly is what didn&rsquo;t work — and no architecture fixes
+    that.</li>
+  </ul>
+</div></section>
+
+<footer><div class="wrap"><div class="foot">
+  <span>Sawit &mdash; MIT licensed</span>
+  <a href="https://github.com/prajwal2308/SAWIT">Source</a>
+  <a href="https://github.com/prajwal2308/SAWIT#install">Install</a>
+  <a href="https://prajwal2308.github.io/VACS/">VACS</a>
+  <span class="sp">Built by <a href="https://github.com/prajwal2308">Prajwal S</a></span>
+</div></div></footer>
+
+</body>
+</html>
